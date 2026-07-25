@@ -274,6 +274,23 @@ test.describe("reading books aloud", () => {
     await expect.poll(() => speakingSi(page), { timeout: 20_000 }).toBe(3);
   });
 
+  test("selecting text inside a sentence never starts playback", async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS);
+    const box = await page.locator('.sent[data-si="1"]').boundingBox();
+    await page.mouse.move(box.x + 5, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + Math.min(120, box.width - 10), box.y + box.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(600);
+    // copying a phrase must not start audio, publish a transport, or trigger the model
+    await expect(page.locator("#rIconPlay")).toBeVisible();
+    expect(await page.evaluate(() => document.querySelectorAll(".sent.speaking").length)).toBe(0);
+    expect(await page.evaluate(() => window.__TTS_GEN || 0)).toBe(0);
+    // and a plain tap still reads
+    await page.click('.sent[data-si="1"]');
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBe(1);
+  });
+
   test("books read aloud fully offline after one online visit", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5 });
     await page.goto("/");

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Lantern — read anything aloud</title>
 <meta name="theme-color" content="#0E1420">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -81,7 +81,10 @@
   .speeds { display: flex; background: var(--page); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
   .speeds button {
     background: none; border: 0; color: var(--mist); font-family: var(--mono); font-size: 13px;
-    padding: 0 11px; cursor: pointer; border-left: 1px solid var(--line);
+    /* intrinsic touch height: the paste view stretches this widget to the voice
+       <select>'s height, but .set-row centres it — without a min-height the same
+       buttons collapse to their 15px line box inside the reading-settings sheet */
+    padding: 0 11px; min-height: 40px; cursor: pointer; border-left: 1px solid var(--line);
   }
   .speeds button:first-child { border-left: 0; }
   .speeds button.on { color: var(--ink); background: var(--lamp); font-weight: 600; }
@@ -97,7 +100,7 @@
   .primary.stopping { background: var(--ember); color: var(--chalk); }
   .primary.working { animation: breathe 2.2s ease-in-out infinite; }
   @keyframes breathe { 50% { box-shadow: 0 0 22px rgba(242,178,76,.35); } }
-  @media (prefers-reduced-motion: reduce) { .primary.working { animation: none; } .model-state.busy .dot { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .primary.working, .pbtn.working { animation: none; } .model-state.busy .dot { animation: none; } }
 
   /* ---------- model download banner ---------- */
   .banner { background: var(--page); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; font-size: 13.5px; color: var(--mist); }
@@ -150,6 +153,11 @@
   .lib-actions .primary { flex: 1; width: auto; }
   .shelf { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
   .book { background: var(--page); border: 1px solid var(--line); border-radius: 14px; padding: 10px; cursor: pointer; display: flex; flex-direction: column; gap: 7px; }
+  /* the open affordance is a real <button> so books are keyboard/AT-operable —
+     styled to be layout-invisible inside the card */
+  .book-open { display: flex; flex-direction: column; gap: 7px; width: 100%;
+               background: none; border: 0; padding: 0; margin: 0;
+               color: inherit; font: inherit; text-align: left; cursor: pointer; }
   .book .cover { aspect-ratio: 2 / 3; border-radius: 8px; overflow: hidden; background: linear-gradient(160deg, #223049, #141d2c); display: flex; align-items: center; justify-content: center; }
   .book .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .book .cover .initials { font-family: var(--serif); font-style: italic; font-size: 36px; color: var(--lamp); opacity: .85; }
@@ -187,18 +195,27 @@
   .sheet-done { background: var(--lamp); color: var(--ink); border: 0; border-radius: 10px; padding: 8px 16px; font-family: var(--body); font-style: normal; font-size: 13px; font-weight: 600; cursor: pointer; }
   .toc-list button { display: block; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); color: var(--chalk); font-size: 15px; padding: 13px 4px; cursor: pointer; }
   .toc-list button:last-child { border-bottom: 0; }
-  .toc-list button.current { color: var(--lamp); }
+  .toc-list button.current { color: var(--lamp); font-weight: 600; }
+  .toc-list button.current::before { content: "▸ "; } /* colour must not be the only cue */
   .set-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; font-size: 14px; color: var(--mist); }
   .set-row .voice-wrap { flex: 1; max-width: 300px; }
   .fontsize { display: flex; align-items: center; gap: 10px; }
   .fontsize button { background: var(--ink); border: 1px solid var(--line); color: var(--chalk); border-radius: 10px; padding: 8px 14px; font-size: 14px; cursor: pointer; }
   .fontsize span { font-family: var(--mono); font-size: 13px; color: var(--chalk); min-width: 2ch; text-align: center; }
-  .cfg-input { flex: 1; max-width: 300px; background: var(--ink); border: 1px solid var(--line); border-radius: 10px; color: var(--chalk); font-family: var(--mono); font-size: 13px; padding: 10px 12px; outline: none; }
+  /* 16px, not 13: with pinch-zoom re-enabled, iOS auto-zooms on focus of any sub-16px field */
+  .cfg-input { flex: 1; max-width: 300px; background: var(--ink); border: 1px solid var(--line); border-radius: 10px; color: var(--chalk); font-family: var(--mono); font-size: 16px; padding: 10px 12px; outline: none; }
   .cfg-input:focus { border-color: var(--lamp); }
   .sheet .hint { margin: 6px 0 2px; line-height: 1.55; }
   .mono { font-family: var(--mono); font-size: .92em; }
 
   [hidden] { display: none !important; }
+  /* visually hidden but present in the accessibility tree (must NOT be display:none) */
+  .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+  .sheet:focus { outline: none; } /* the programmatic dialog focus needs no ring */
+  /* keyboard focus must be visible on every interactive control */
+  .book-open:focus-visible, .b-del:focus-visible, .voice-wrap select:focus-visible,
+  .cfg-input:focus-visible, .speeds button:focus-visible, .toc-list button:focus-visible,
+  .sheet-done:focus-visible { outline: 2px solid var(--lamp); outline-offset: 2px; }
 </style>
 </head>
 <body>
@@ -250,8 +267,8 @@
         </optgroup>
       </select>
     </div>
-    <div class="speeds" id="speeds">
-      <button data-s="0.8">0.8×</button><button data-s="1" class="on">1×</button><button data-s="1.2">1.2×</button><button data-s="1.5">1.5×</button>
+    <div class="speeds" id="speeds" role="group" aria-label="Playback speed">
+      <button data-s="0.8" aria-pressed="false">0.8×</button><button data-s="1" class="on" aria-pressed="true">1×</button><button data-s="1.2" aria-pressed="false">1.2×</button><button data-s="1.5" aria-pressed="false">1.5×</button>
     </div>
   </div>
 
@@ -306,18 +323,18 @@
 
   <!-- ---------- bottom sheets (shared by reader + library) ---------- -->
   <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
-  <div class="sheet" id="tocSheet" hidden>
-    <div class="sheet-title">Chapters <button class="sheet-done" data-close>Done</button></div>
+  <div class="sheet" id="tocSheet" role="dialog" aria-modal="true" aria-labelledby="tocSheetTitle" tabindex="-1" hidden>
+    <div class="sheet-title"><span id="tocSheetTitle">Chapters</span> <button class="sheet-done" data-close>Done</button></div>
     <div class="toc-list" id="tocList"></div>
   </div>
-  <div class="sheet" id="setSheet" hidden>
-    <div class="sheet-title">Reading settings <button class="sheet-done" data-close>Done</button></div>
+  <div class="sheet" id="setSheet" role="dialog" aria-modal="true" aria-labelledby="setSheetTitle" tabindex="-1" hidden>
+    <div class="sheet-title"><span id="setSheetTitle">Reading settings</span> <button class="sheet-done" data-close>Done</button></div>
     <div class="set-row"><span>Text size</span>
       <div class="fontsize"><button id="fontMinus" aria-label="Smaller text">A−</button><span id="fontVal"></span><button id="fontPlus" aria-label="Larger text">A+</button></div>
     </div>
     <div class="set-row"><span>Engine</span>
-      <div class="speeds" id="engineBtns">
-        <button data-e="kokoro" class="on">On-device</button><button data-e="qwen">Qwen3-TTS</button>
+      <div class="speeds" id="engineBtns" role="group" aria-label="Voice engine">
+        <button data-e="kokoro" class="on" aria-pressed="true">On-device</button><button data-e="qwen" aria-pressed="false">Qwen3-TTS</button>
       </div>
     </div>
     <div id="kokoroCfg">
@@ -332,8 +349,8 @@
       <p class="hint">Qwen3-TTS needs a GPU, so it runs on a computer you own and Lantern streams the voice from it (an OpenAI-compatible <span class="mono">/v1/audio/speech</span> server, reachable over HTTPS with CORS enabled). On-device reading keeps working offline either way.</p>
     </div>
     <div class="set-row"><span>Speed</span>
-      <div class="speeds" id="rSpeeds">
-        <button data-s="0.8">0.8×</button><button data-s="1" class="on">1×</button><button data-s="1.2">1.2×</button><button data-s="1.5">1.5×</button>
+      <div class="speeds" id="rSpeeds" role="group" aria-label="Playback speed">
+        <button data-s="0.8" aria-pressed="false">0.8×</button><button data-s="1" class="on" aria-pressed="true">1×</button><button data-s="1.2" aria-pressed="false">1.2×</button><button data-s="1.5" aria-pressed="false">1.5×</button>
       </div>
     </div>
   </div>
@@ -342,6 +359,8 @@
     <span id="bannerText"></span>
     <div class="bar" id="bannerBar" hidden><i id="bannerFill"></i></div>
   </div>
+  <!-- errors are announced here: present from parse time so role=alert reliably fires -->
+  <div id="a11yAlert" class="sr-only" role="alert" aria-live="assertive" aria-atomic="true"></div>
 
   <footer id="appFooter">Runs entirely on this device · Kokoro-82M · English</footer>
 </div>
@@ -362,6 +381,8 @@
       "<span class=\"mono\">cdn.jsdelivr.net</span> and that request failed. Check your connection " +
       "or network filter, then reload.";
     b.classList.add("error"); b.hidden = false;
+    var a = document.getElementById("a11yAlert");
+    if (a) a.textContent = t.textContent; /* the module never ran — announce here */
   }
   /* a failed module-graph fetch fires `error` at the <script> element; resource
      error events don't bubble, so listen in the capture phase */
@@ -387,7 +408,7 @@ const textEl = $("text"), countEl = $("count"), readBtn = $("readBtn"),
       modelState = $("modelState"), modelStateText = $("modelStateText"),
       voiceSel = $("voice"), speedsEl = $("speeds"), clearBtn = $("clearBtn"),
       viewLibrary = $("viewLibrary"), viewPaste = $("viewPaste"), viewReader = $("viewReader"),
-      addBookBtn = $("addBookBtn"), bookFile = $("bookFile"), shelf = $("shelf"), libEmpty = $("libEmpty"), appFooter = $("appFooter"),
+      addBookBtn = $("addBookBtn"), bookFile = $("bookFile"), shelf = $("shelf"), libEmpty = $("libEmpty"), appFooter = $("appFooter"), a11yAlert = $("a11yAlert"),
       pasteModeBtn = $("pasteModeBtn"), pasteBackBtn = $("pasteBackBtn"),
       backBtn = $("backBtn"), tocBtn = $("tocBtn"), fontBtn = $("fontBtn"),
       rBook = $("rBook"), rChapter = $("rChapter"), rScroll = $("rScroll"), rContent = $("rContent"),
@@ -413,7 +434,15 @@ try {
   qwenVoiceName = localStorage.getItem("lantern.qwenVoice") || "cherry";
   qwenApiKey = localStorage.getItem("lantern.qwenKey") || "";
 } catch {}
-for (const b of speedsEl.children) b.classList.toggle("on", parseFloat(b.dataset.s) === speed);
+for (const b of speedsEl.children) setOnState(b, parseFloat(b.dataset.s) === speed);
+
+/* the `.on` class is invisible to assistive tech, and re-selecting the live value
+   is a deliberate no-op — so without an ARIA state the selection could be neither
+   perceived nor probed. Carry it in both. (Hoisted, so the boot loop above is fine.) */
+function setOnState(el, on) {
+  el.classList.toggle("on", on);
+  el.setAttribute("aria-pressed", on ? "true" : "false");
+}
 
 const SR = 24000;
 /* the Cache API only exists in secure contexts — over plain-HTTP LAN there is
@@ -491,6 +520,13 @@ function excerpt(text, maxWords, maxChars = 60) {
   return s;
 }
 function setModelState(cls, txt) { modelState.className = "model-state " + cls; modelStateText.textContent = txt; }
+/* clear-then-set: assigning the SAME string can be deduped by AT, and re-picking
+   the same bad file must announce again rather than fall silent the second time */
+function announce(msg) {
+  if (!msg) return;
+  a11yAlert.textContent = "";
+  requestAnimationFrame(() => { a11yAlert.textContent = msg; });
+}
 function showBanner(txt, { bar = false, error = false } = {}) {
   banner.hidden = false; banner.classList.toggle("error", error);
   bannerText.innerHTML = txt; bannerBar.hidden = !bar;
@@ -498,8 +534,11 @@ function showBanner(txt, { bar = false, error = false } = {}) {
      the fold, and an unseen error reads as a silent no-op. (While a sheet is open
      the CSS floats it above the sheet layer instead.) */
   if (error && tocSheet.hidden && setSheet.hidden) banner.scrollIntoView({ block: "nearest" });
+  /* scrollIntoView is a sighted-only affordance: it moves neither DOM focus nor the
+     AT virtual cursor. Errors must reach a live region or they do not exist. */
+  if (error) announce(bannerText.textContent);
 }
-function hideBanner() { banner.hidden = true; }
+function hideBanner() { banner.hidden = true; a11yAlert.textContent = ""; /* a cleared error must not be re-read by a cursor sweep */ }
 /* an error reports on ONE attempt, in ONE view, under ONE engine — and the banner
    has no dismiss control, so anything that invalidates it must clear it */
 function clearErrorBanner() { if (!banner.hidden && banner.classList.contains("error")) hideBanner(); }
@@ -531,7 +570,7 @@ function setSpeed(s) {
   if (s === speed) return; /* re-tapping the active speed must not restart the sentence */
   speed = s;
   for (const group of [speedsEl, rSpeeds])
-    for (const c of group.children) c.classList.toggle("on", parseFloat(c.dataset.s) === s);
+    for (const c of group.children) setOnState(c, parseFloat(c.dataset.s) === s);
   try { localStorage.setItem("lantern.speed", String(s)); } catch {}
   readerSettingsChanged();
 }
@@ -1453,6 +1492,14 @@ async function renderLibrary() {
     const card = document.createElement("div");
     card.className = "book"; card.dataset.id = b.id;
 
+    /* a real <button> — not a click handler on the div — so a book can be opened by
+       keyboard and assistive tech. (role="button" on the card would drag ARIA's
+       presentational-children rule over the nested Remove button and hide it.) */
+    const open = document.createElement("button");
+    open.type = "button"; open.className = "book-open";
+    open.addEventListener("click", () => { location.hash = "read/" + encodeURIComponent(b.id); });
+    card.appendChild(open);
+
     const cover = document.createElement("div"); cover.className = "cover";
     if (b.cover) {
       const img = document.createElement("img");
@@ -1464,15 +1511,15 @@ async function renderLibrary() {
       ini.textContent = (b.title || "?").split(/\s+/).slice(0, 2).map(w => w[0] || "").join("").toUpperCase();
       cover.appendChild(ini);
     }
-    card.appendChild(cover);
+    open.appendChild(cover);
 
-    const t = document.createElement("div"); t.className = "b-title"; t.textContent = b.title; card.appendChild(t);
-    const a = document.createElement("div"); a.className = "b-author"; a.textContent = b.author || "Unknown author"; card.appendChild(a);
+    const t = document.createElement("div"); t.className = "b-title"; t.textContent = b.title; open.appendChild(t);
+    const a = document.createElement("div"); a.className = "b-author"; a.textContent = b.author || "Unknown author"; open.appendChild(a);
 
     const prog = document.createElement("div"); prog.className = "b-progress";
     const fill = document.createElement("i");
     fill.style.width = `${Math.round(((pmap.get(b.id) || {}).pct || 0) * 100)}%`;
-    prog.appendChild(fill); card.appendChild(prog);
+    prog.appendChild(fill); open.appendChild(prog);
 
     const del = document.createElement("button"); del.className = "b-del"; del.textContent = "Remove";
     let delTimer;
@@ -1488,11 +1535,6 @@ async function renderLibrary() {
       renderLibrary();
     });
     card.appendChild(del);
-
-    card.addEventListener("click", e => {
-      if (e.target.closest(".b-del")) return;
-      location.hash = "read/" + encodeURIComponent(b.id);
-    });
     shelf.appendChild(card);
   }
 }
@@ -1579,7 +1621,7 @@ function readerTeardown() {
       navigator.mediaSession.setActionHandler("seekforward", null);
     } catch {}
   }
-  closeSheets();
+  closeSheets({ restoreFocus: false }); /* the opener is inside the view being torn down */
 }
 
 function readerProgressPct() {
@@ -1600,6 +1642,10 @@ function updateReaderStatus(extra) {
   if (extra) parts.push(extra);
   else if (rd.started && !rd.genDone) parts.push(genLabel());
   rStatus.textContent = parts.join(" · ");
+  /* `extra` marks one-shot park states ("tap play to retry/continue", "the end") —
+     they happen with no user action, the audio simply stops, so they must be
+     announced. The per-sentence path never passes it, so this cannot spam. */
+  if (extra) announce(rStatus.textContent);
 }
 
 function renderChapter() {
@@ -1942,15 +1988,53 @@ rNext.addEventListener("click", () => readerSkip(1));
 rContent.addEventListener("click", e => {
   const el = e.target.closest(".sent");
   if (!el) return;
+  /* a drag-select or double-click-to-look-up INSIDE one sentence dispatches click
+     at that span, and readerPlayFrom is not a passive seek — it starts audio,
+     publishes a playing transport and can kick off the 90 MB model download.
+     Copying a phrase must never start a reading. e.detail > 1 drops the second
+     click of a double-click, which would otherwise tear down the run the first
+     one just started. (A plain tap always has a collapsed selection by click time,
+     and a programmatic el.click() has detail 0 — both still read.) */
+  if (e.detail > 1) return;
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed && rContent.contains(sel.anchorNode)) return;
   readerPlayFrom(parseInt(el.dataset.si, 10));
 });
 backBtn.addEventListener("click", () => { location.hash = "#library"; });
 
 /* ---------------- sheets: chapters + settings ---------------- */
-function openSheet(sheet) { sheetBackdrop.hidden = false; sheet.hidden = false; }
-function closeSheets() { sheetBackdrop.hidden = true; tocSheet.hidden = true; setSheet.hidden = true; }
-sheetBackdrop.addEventListener("click", closeSheets);
-for (const b of document.querySelectorAll(".sheet [data-close]")) b.addEventListener("click", closeSheets);
+/* The sheets are modal in appearance only without this: the fixed backdrop swallows
+   pointer events, but the app behind them would stay in the tab order and the AT
+   tree — a keyboard/VoiceOver user could still reach Play, Next, or a book's
+   destructive "Remove", which no pointer user can. The banner is deliberately NOT
+   inerted: an error floats above the sheet layer (see the :has() rule) and must
+   stay announced. */
+const sheetInert = [$("appHeader"), viewLibrary, viewPaste, viewReader, appFooter];
+let sheetOpener = null;
+function openSheet(sheet) {
+  if (sheetBackdrop.hidden) sheetOpener = document.activeElement; /* only the first open owns the restore target */
+  sheetBackdrop.hidden = false;
+  tocSheet.hidden = sheet !== tocSheet;
+  setSheet.hidden = sheet !== setSheet;
+  for (const el of sheetInert) if (el) el.inert = true;
+  sheet.focus(); /* lands AT on "Chapters, dialog" instead of leaving it behind the backdrop */
+}
+/* restoreFocus=false for teardown/route changes: the opener is about to be hidden,
+   and focusing it there would just drop to <body> a frame later */
+function closeSheets({ restoreFocus = true } = {}) {
+  const wasOpen = !sheetBackdrop.hidden;
+  sheetBackdrop.hidden = true; tocSheet.hidden = true; setSheet.hidden = true;
+  for (const el of sheetInert) if (el) el.inert = false;
+  const back = sheetOpener; sheetOpener = null;
+  /* [hidden] is display:none, so the focused "Done" would otherwise drop focus to
+     <body> and restart the next Tab at the top of the document */
+  if (wasOpen && restoreFocus && back && back.isConnected && back.offsetParent !== null) back.focus();
+}
+sheetBackdrop.addEventListener("click", () => closeSheets());
+for (const b of document.querySelectorAll(".sheet [data-close]")) b.addEventListener("click", () => closeSheets());
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && !sheetBackdrop.hidden) { e.preventDefault(); closeSheets(); }
+});
 tocBtn.addEventListener("click", () => { buildToc(); openSheet(tocSheet); });
 fontBtn.addEventListener("click", () => openSheet(setSheet));
 
@@ -1959,7 +2043,7 @@ function buildToc() {
   rd.book.chapters.forEach((c, i) => {
     const b = document.createElement("button");
     b.textContent = c.title;
-    if (i === rd.ch) b.classList.add("current");
+    if (i === rd.ch) { b.classList.add("current"); b.setAttribute("aria-current", "true"); }
     b.addEventListener("click", () => {
       closeSheets();
       if (i === rd.ch) return;
@@ -1991,11 +2075,11 @@ applyFont();
 /* mirror the paste view's voice options + current prefs into the settings sheet */
 rVoice.innerHTML = voiceSel.innerHTML;
 rVoice.value = voiceSel.value;
-for (const c of rSpeeds.children) c.classList.toggle("on", parseFloat(c.dataset.s) === speed);
+for (const c of rSpeeds.children) setOnState(c, parseFloat(c.dataset.s) === speed);
 
 /* ---------------- voice engine settings ---------------- */
 function applyEngineUI() {
-  for (const b of engineBtns.children) b.classList.toggle("on", b.dataset.e === engine);
+  for (const b of engineBtns.children) setOnState(b, b.dataset.e === engine);
   kokoroCfg.hidden = engine !== "kokoro";
   qwenCfg.hidden = engine !== "qwen";
   voiceSel.disabled = engine === "qwen"; /* the kokoro voice list is meaningless on the server engine */
@@ -2155,7 +2239,7 @@ function showView(name) {
      activeView so the very first route() can't wipe the boot-failure banner. */
   if (activeView) clearErrorBanner();
   activeView = name;
-  closeSheets(); /* sheets are shared between views — never leave one floating across a switch */
+  closeSheets({ restoreFocus: false }); /* sheets are shared between views — never leave one floating across a switch, and the opener is leaving the screen */
   viewLibrary.classList.toggle("active", name === "library");
   viewPaste.classList.toggle("active", name === "paste");
   viewReader.classList.toggle("active", name === "reader");
