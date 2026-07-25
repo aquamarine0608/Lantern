@@ -105,6 +105,18 @@ test.describe("reading books aloud", () => {
     await expect(page.locator("#rIconPause")).toBeVisible();
   });
 
+  test("after the end, skip taps restart cleanly instead of claiming the book is silent", async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS);
+    await page.click("#tocBtn");
+    await page.locator("#tocList button").nth(2).click();
+    await page.click('.sent[data-si="3"]');
+    await expect(page.locator("#rStatus")).toContainText("the end", { timeout: 15_000 });
+
+    await page.click("#rNext"); // parked with si out of range — must clamp, not pump an empty run
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(0);
+    await expect(page.locator("#banner")).toBeHidden(); // never "isn't producing any audio"
+  });
+
   test("a synthesis failure parks the reader for retry instead of skipping the chapter", async ({ page, mockTTS }) => {
     await openBookReady(page, mockTTS, { streamFailAfter: 0 }); // every generate() call fails
     await page.click("#rPlay");

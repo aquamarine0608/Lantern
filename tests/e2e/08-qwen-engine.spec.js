@@ -36,15 +36,50 @@ test.describe("Qwen3-TTS server engine", () => {
     await waitForFileMode(page);
   });
 
-  test("an HTTP error from the server surfaces the server-specific message", async ({ page, mockTTS }) => {
+  test("an HTTP error from the server names the status instead of blaming the network", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.goto("/");
     await enableQwen(page);
     await setQwenFail(true);
     await page.click("#pasteModeBtn");
     await startRead(page);
-    await expect(page.locator("#bannerText")).toContainText("Qwen3-TTS server", { timeout: 15_000 });
+    await expect(page.locator("#bannerText")).toContainText("reported an error (500)", { timeout: 15_000 });
+    await expect(page.locator("#bannerText")).not.toContainText("HTTPS and CORS"); // the server WAS reached
     await expect(page.locator("#player")).toBeHidden();
+  });
+
+  test("a suspend mid-edit never overwrites the committed server address", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await enableQwen(page);
+    // half-typed text sitting in the field, never committed (no focus, no change event)
+    await page.evaluate(() => { document.getElementById("qwenUrl").value = "http://127.0.0.1:41"; });
+    await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(QWEN_URL);
+
+    await page.reload();
+    await expect(page.locator("#modelStateText")).toHaveText("qwen3-tts · server voice"); // live config intact
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#qwenUrl")).toHaveValue("http://127.0.0.1:41"); // the draft is preserved for finishing
+    await page.click(".sheet:not([hidden]) .sheet-done");
+
+    // and reading still uses the committed address
+    await page.click("#pasteModeBtn");
+    await startRead(page, "One sentence only here.");
+    await waitForFileMode(page);
+  });
+
+  test("a one-chapter silent book parks with an explanation, not 'the end'", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 30, chunkSeconds: 0 });
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "tiny-silent.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "Tiny Silent", chapters: [{ title: "Only Chapter", paras: ["One line here."] }] }),
+    });
+    await page.click(".book");
+    await page.click("#rPlay");
+    await expect(page.locator("#bannerText")).toContainText("isn't producing any audio", { timeout: 20_000 });
+    await expect(page.locator("#rStatus")).not.toContainText("the end");
   });
 
   test("48 kHz server audio is downsampled to the pipeline rate correctly", async ({ page, mockTTS }) => {
@@ -229,6 +264,8 @@ test.describe("Qwen3-TTS server engine", () => {
     await expect(page.locator("#rIconPlay")).toBeVisible();
     await expect(page.locator("#rStatus")).not.toContainText("generating on-device");
     await expect(page.locator("#rStatus")).toContainText("tap play to retry");
+    // the OS transport must not be left claiming "playing" over a silent stream
+    expect(await page.evaluate(() => document.querySelector("audio").paused)).toBe(true);
 
     // configuring the server and tapping play recovers in place
     await page.click("#fontBtn");

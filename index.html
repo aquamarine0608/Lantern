@@ -399,6 +399,10 @@ function setModelState(cls, txt) { modelState.className = "model-state " + cls; 
 function showBanner(txt, { bar = false, error = false } = {}) {
   banner.hidden = false; banner.classList.toggle("error", error);
   bannerText.innerHTML = txt; bannerBar.hidden = !bar;
+  /* the banner is the last in-flow element — on a multi-row shelf it can sit below
+     the fold, and an unseen error reads as a silent no-op. (While a sheet is open
+     the CSS floats it above the sheet layer instead.) */
+  if (error && tocSheet.hidden && setSheet.hidden) banner.scrollIntoView({ block: "nearest" });
 }
 function hideBanner() { banner.hidden = true; }
 
@@ -445,7 +449,12 @@ for (const group of [speedsEl, rSpeeds])
 function loadModel(quiet) {
   if (tts) return Promise.resolve(tts);
   if (modelLoading) {
-    if (!quiet) modelLoadQuiet = false; /* a user-initiated read joined the quiet warm-up — failures must surface now */
+    if (!quiet && modelLoadQuiet) {
+      /* a user-initiated read joined the quiet warm-up — this is user-visible work
+         now, so surface the banner and progress the quiet start skipped */
+      modelLoadQuiet = false;
+      if (banner.hidden) showBanner(`<b>Downloading the voice model…</b> One time only.`, { bar: true });
+    } else if (!quiet) modelLoadQuiet = false;
     return modelLoading;
   }
   modelLoadQuiet = !!quiet;
@@ -564,8 +573,9 @@ async function qwenSynthesize(text, signal, spd = speed) {
   if (!base) throw new Error("no Qwen3-TTS server configured");
   /* a black-holed server must never hang a pump: hard timeout + caller abort */
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(new Error("TTS server timed out")), 30000);
-  const onOuter = () => ctl.abort(new Error("cancelled"));
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, 30000);
+  const onOuter = () => ctl.abort();
   if (signal) { if (signal.aborted) onOuter(); else signal.addEventListener("abort", onOuter, { once: true }); }
   try {
     const headers = { "content-type": "application/json" };
@@ -576,16 +586,37 @@ async function qwenSynthesize(text, signal, spd = speed) {
       body: JSON.stringify({ model: "qwen3-tts", input: text, voice: qwenVoiceName || "cherry", speed: spd, response_format: "wav" }),
       signal: ctl.signal,
     });
-    if (!res.ok) throw new Error("TTS server responded " + res.status);
-    return wavToFloat32(await res.arrayBuffer(), SR);
+    if (!res.ok) throw Object.assign(new Error("TTS server responded " + res.status), { qwenStatus: res.status });
+    const abuf = await res.arrayBuffer();
+    try { return wavToFloat32(abuf, SR); }
+    catch (e) { throw Object.assign(e, { qwenBadAudio: true }); }
+  } catch (err) {
+    if (timedOut && !(signal && signal.aborted)) throw Object.assign(new Error("TTS server timed out"), { qwenTimeout: true });
+    throw err;
   } finally {
     clearTimeout(timer);
     if (signal) signal.removeEventListener("abort", onOuter);
   }
 }
 
+/* failure classes deserve different advice — "check HTTPS and CORS" is wrong when
+   the server answered with a 401. Every interpolated value is app-authored. */
+function qwenErrorHtml(err, retryHint) {
+  const st = err && err.qwenStatus, tail = retryHint ? " " + retryHint : "";
+  if (st === 401 || st === 403) return `<b>Your Qwen3-TTS server rejected the API key (${st}).</b> Check the API key in Voice settings — the address itself is working.` + tail;
+  if (st === 404) return `<b>Your server answered, but has no <span class="mono">/v1/audio/speech</span> endpoint (404).</b> Check the address path.` + tail;
+  if (st) return `<b>Your Qwen3-TTS server reported an error (${st}).</b> Lantern reached it — check the server's own logs.` + tail;
+  if (err && err.qwenBadAudio) return `<b>Your server answered, but not with usable WAV audio.</b> It must honour <span class="mono">response_format: wav</span>.` + tail;
+  if (err && err.qwenTimeout) return `<b>Your Qwen3-TTS server didn't answer within 30 seconds.</b> It may be overloaded or still loading the model.` + tail;
+  if (!navigator.onLine) return `<b>This device is offline.</b> Switch Engine to On-device in Voice settings to keep reading without a network.` + tail;
+  return `<b>Couldn't reach your Qwen3-TTS server.</b> Check the address, that the server is running, and that HTTPS and CORS are set up.` + tail;
+}
+
 /* one call = one sentence of mono 24 kHz audio, whatever the engine */
 async function synthesizeSentence(text, signal) {
+  /* a queued call whose session was superseded must not occupy the gen lock —
+     kokoro generates are not abortable mid-flight, so refuse before starting */
+  if (signal && signal.aborted) throw new DOMException("cancelled", "AbortError");
   if (engine === "qwen") return qwenSynthesize(text, signal);
   const out = await tts.generate(text, { voice: voiceSel.value, speed });
   return out.audio;
@@ -906,7 +937,7 @@ readBtn.addEventListener("click", async () => {
       console.error(err);
       streamFailed = true;
       showBanner(engine === "qwen"
-        ? `<b>Couldn't reach your Qwen3-TTS server.</b> Check the address, that the server is running, and that HTTPS and CORS are set up.`
+        ? qwenErrorHtml(err)
         : `<b>Something went wrong while generating.</b> Try again with a shorter text, or reload the page.`, { error: true });
     }
   }
@@ -1422,6 +1453,8 @@ async function readerPlayFrom(si) {
       rd.playing = false; rd.started = false;
       setReaderIcon("play");
       updateReaderStatus("tap play to retry"); /* never leave a stale "generating…" line behind */
+      if (audioEl) audioEl.pause(); /* the routed stream was already live — the OS transport must not claim "playing" */
+      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
     }
     return;
   }
@@ -1445,16 +1478,22 @@ async function readerPlayFrom(si) {
       if (myToken !== rd.token) return;
     }
     const key = `${engine}:${engine === "qwen" ? qwenVoiceName : voiceSel.value}:${speed}:${chAtStart}:${i}`;
+    const sentText = rd.sentences[i]; /* bind now — by the time the lock frees, index i may belong to another chapter */
     let f32 = rd.cache.get(key);
     if (f32 === undefined) {
-      try { f32 = await withGenLock(() => synthesizeSentence(rd.sentences[i], myAbort.signal)); }
+      try {
+        f32 = await withGenLock(() => {
+          if (myToken !== rd.token) throw new DOMException("superseded", "AbortError");
+          return synthesizeSentence(sentText, myAbort.signal);
+        });
+      }
       catch (err) {
         if (myToken !== rd.token) return; /* cancelled by a jump/teardown — not an error */
         console.error(err);
         genFailed = true;
         if (myToken === rd.token) {
           showBanner(engine === "qwen"
-            ? `<b>Couldn't reach your Qwen3-TTS server.</b> Check the address, that the server is running, and that HTTPS and CORS are set up. Tap a sentence to try again.`
+            ? qwenErrorHtml(err, "Tap a sentence to try again.")
             : `<b>Something went wrong while generating.</b> Tap a sentence to try again.`, { error: true });
           rd.genDone = true; updateReaderStatus();
         }
@@ -1490,19 +1529,22 @@ async function readerPlayFrom(si) {
     if (genFailed) {
       rd.playing = false; rd.started = false;
       setReaderIcon("play");
+      if (audioEl) audioEl.pause();
       if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
       return;
     }
     if (!scheduledAny) {
       /* a couple of silent chapters (cover pages) are fine to skip — but a book
          where nothing synthesizes must never be fast-forwarded to "the end",
-         trampling the saved reading position on the way */
+         trampling the saved reading position on the way. Short books hit the
+         guard as soon as every chapter they have has come back silent. */
       rd.emptyRun++;
-      if (rd.emptyRun >= 3) {
+      if (rd.emptyRun >= Math.min(3, rd.book.chapters.length)) {
         rd.playing = false; rd.started = false;
         setReaderIcon("play");
         showBanner(`<b>This book isn't producing any audio.</b> The chapters may be empty, or the voice engine is returning silence.`, { error: true });
         updateReaderStatus("tap play to retry");
+        if (audioEl) audioEl.pause();
         if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
         return;
       }
@@ -1554,7 +1596,7 @@ function readerToggle(force) {
 
 function readerSkip(d) {
   if (!rd.book) return;
-  if (!rd.started) { readerPlayFrom(rd.si); return; }
+  if (!rd.started) { readerPlayFrom(rd.si >= rd.sentences.length ? 0 : (rd.si || 0)); return; } /* same clamp as play: "the end" parks si out of range */
   const t = rd.si + d;
   if (t < 0) {
     if (rd.ch > 0) {
@@ -1665,25 +1707,35 @@ qwenUrl.addEventListener("change", () => {
   qwenServer = normalizeServerUrl(qwenUrl.value);
   qwenUrl.value = qwenServer;
   try { localStorage.setItem("lantern.qwenUrl", qwenServer); } catch {}
+  clearQwenDraft();
   applyEngineUI();
   readerSettingsChanged();
 });
 qwenVoice.addEventListener("change", () => {
   qwenVoiceName = qwenVoice.value.trim() || "cherry";
   try { localStorage.setItem("lantern.qwenVoice", qwenVoiceName); } catch {}
+  clearQwenDraft();
   readerSettingsChanged();
 });
 qwenKey.addEventListener("change", () => {
   qwenApiKey = qwenKey.value.trim();
   qwenKey.value = qwenApiKey;
   try { localStorage.setItem("lantern.qwenKey", qwenApiKey); } catch {}
+  clearQwenDraft();
   readerSettingsChanged();
 });
-function flushQwenFields() { /* persist typed-but-uncommitted text without touching the live config */
+/* uncommitted text gets its own storage key: it must survive an iOS suspend so the
+   user can finish the edit, but it must never become the live config — a half-typed
+   (or half-deleted) address would silently replace a working one with no fallback */
+const QDRAFT = "lantern.qwenDraft";
+function clearQwenDraft() { try { localStorage.removeItem(QDRAFT); } catch {} }
+function flushQwenFields() {
   try {
-    localStorage.setItem("lantern.qwenUrl", normalizeServerUrl(qwenUrl.value));
-    localStorage.setItem("lantern.qwenVoice", qwenVoice.value.trim() || "cherry");
-    localStorage.setItem("lantern.qwenKey", qwenKey.value.trim());
+    const u = qwenUrl.value, v = qwenVoice.value, k = qwenKey.value;
+    if (normalizeServerUrl(u) === qwenServer &&
+        (v.trim() || "cherry") === qwenVoiceName &&
+        k.trim() === qwenApiKey) { clearQwenDraft(); return; } /* nothing uncommitted */
+    localStorage.setItem(QDRAFT, JSON.stringify({ u, v, k }));
   } catch {}
 }
 window.addEventListener("pagehide", flushQwenFields);
@@ -1691,6 +1743,16 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 qwenUrl.value = qwenServer;
 qwenVoice.value = qwenVoiceName;
 qwenKey.value = qwenApiKey;
+/* show any edit the user was interrupted mid-way through — in the fields only;
+   reading continues with the last committed address until they blur/commit */
+try {
+  const d = JSON.parse(localStorage.getItem(QDRAFT) || "null");
+  if (d && typeof d === "object") {
+    if (typeof d.u === "string") qwenUrl.value = d.u;
+    if (typeof d.v === "string") qwenVoice.value = d.v;
+    if (typeof d.k === "string") qwenKey.value = d.k;
+  }
+} catch { clearQwenDraft(); }
 applyEngineUI();
 libVoiceBtn.addEventListener("click", () => openSheet(setSheet));
 
