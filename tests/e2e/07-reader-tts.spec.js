@@ -255,14 +255,16 @@ test.describe("reading books aloud", () => {
     // empty sentence 1 generates 2→4 s. Pause at ~3.2 s: audio drained, loop still running.
     await page.waitForTimeout(2900);
     await page.click("#rPlay"); // pause with nothing scheduled
-    const gensAtPause = await page.evaluate(() => window.__TTS_GEN);
     await page.waitForTimeout(1800); // the generation loop exits while the context is suspended
     // the reader must park restartably — not freeze with a dead transport
     await expect(page.locator("#rIconPlay")).toBeVisible();
     await expect(page.locator("#rStatus")).toContainText("tap play to continue");
-    await page.click("#rPlay"); // must start a NEW run (fresh synthesis), not resume an empty context
-    await expect.poll(() => page.evaluate(() => window.__TTS_GEN), { timeout: 15_000 }).toBeGreaterThan(gensAtPause);
-    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(0);
+    // resume: a NEW run replays the chapter (from cache) and finishes the book —
+    // the pre-fix wedge resumed an empty context and froze here forever
+    await page.click("#rPlay");
+    await expect(page.locator("#rStatus")).toContainText("the end", { timeout: 15_000 });
+    await expect(page.locator("#rIconPlay")).toBeVisible();
+    expect(await page.evaluate(() => document.querySelector("audio").paused)).toBe(true);
   });
 
   test("skips during the engine warm-up act on the tapped sentence, not the previous position", async ({ page, mockTTS }) => {
