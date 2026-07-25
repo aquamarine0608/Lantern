@@ -69,6 +69,23 @@ test.describe("Qwen3-TTS server engine", () => {
     await waitForFileMode(page);
   });
 
+  test("a draft typed before any commit becomes the live address on relaunch", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.click('#engineBtns button[data-e="qwen"]');
+    // typed but never committed — then the app is suspended
+    await page.evaluate((u) => { document.getElementById("qwenUrl").value = u; }, QWEN_URL);
+    await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+
+    await page.reload();
+    // nothing committed existed to protect, so the draft must be adopted, not dead-ended
+    await expect(page.locator("#modelStateText")).toHaveText("qwen3-tts · server voice");
+    await page.click("#pasteModeBtn");
+    await startRead(page, "One sentence only here.");
+    await waitForFileMode(page);
+  });
+
   test("a one-chapter silent book parks with an explanation, not 'the end'", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 30, chunkSeconds: 0 });
     await page.goto("/");

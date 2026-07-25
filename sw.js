@@ -2,7 +2,7 @@
    The ~90 MB Kokoro model is cached separately by transformers.js (browser Cache API),
    so after one successful run the whole app works in airplane mode. */
 
-const VERSION = "v3";
+const VERSION = "v4";
 const SHELL = `lantern-shell-${VERSION}`;
 const CDN = `lantern-cdn-${VERSION}`;
 const SHELL_FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-180.png", "./icon-512.png"];
@@ -61,10 +61,18 @@ self.addEventListener("fetch", (e) => {
   // visit, falling back to the cached shell offline. ignoreSearch keeps
   // home-screen launches and shared links with query params working offline.
   if (e.request.mode === "navigate") {
+    /* only the app document may refresh the shell: every file deployed beside
+       index.html is in scope, and a top-level navigation to an icon, the manifest,
+       or sw.js itself would otherwise be cached AS the shell and then served for
+       every offline launch. Compare pathnames — request.url carries the search
+       and (in Chromium) the fragment. */
+    const rootPath = new URL("./", self.location).pathname;
+    const isShellDoc = url.origin === self.location.origin &&
+      (url.pathname === rootPath || url.pathname === rootPath + "index.html");
     e.respondWith(
       fetch(e.request)
         .then((res) => {
-          if (res.ok) {
+          if (res.ok && isShellDoc) {
             const forRoot = res.clone(), forIndex = res.clone();
             caches.open(SHELL).then((c) => { c.put("./", forRoot); c.put("./index.html", forIndex); });
           }

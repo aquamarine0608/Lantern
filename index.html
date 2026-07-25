@@ -1042,8 +1042,24 @@ function joinPath(dir, href) {
   return out.join("/");
 }
 
-const SENTENCE_RE = /[^.!?…]*[.!?…]+[\])"'”’»]*(?:\s+|$)|[^.!?…]+$/g;
-const splitSentences = text => (text.match(SENTENCE_RE) || [text]).map(s => s.trim()).filter(Boolean);
+/* split at terminators that actually end a sentence (followed by space or end of
+   text). Slice-by-index, never String.match: a /g match() silently DISCARDS text
+   it steps over, so "It cost 3.14 dollars." would lose "It cost 3." — decimals,
+   initials (Ph.D.), URLs and missing-space-after-period artifacts are everywhere
+   in real books. */
+const SENT_END_RE = /[.!?…]+[\])"'”’»]*(?=\s|$)/g;
+const splitSentences = text => {
+  const out = [];
+  let last = 0, m;
+  SENT_END_RE.lastIndex = 0;
+  while ((m = SENT_END_RE.exec(text))) {
+    const end = m.index + m[0].length;
+    out.push(text.slice(last, end));
+    last = end;
+  }
+  if (last < text.length) out.push(text.slice(last)); /* trailing text with no terminator */
+  return out.map(s => s.trim()).filter(Boolean);
+};
 
 function parseEpub(arrayBuf) {
   let zip;
@@ -1140,6 +1156,8 @@ function parseEpub(arrayBuf) {
     for (const node of el.childNodes) {
       if (node.nodeType === 1 && BLOCK_TAGS.has(node.tagName)) { flush(); collectBlocks(node, out); }
       else if (node.nodeType === 1 && (node.tagName === "SCRIPT" || node.tagName === "STYLE")) continue;
+      else if (node.nodeType === 8 || node.nodeType === 7) continue; /* comments/PIs are markup, not prose — never rendered, never spoken */
+      else if (node.nodeType === 1 && node.tagName === "BR") buf += "\n"; /* a BR's textContent is "" — the line break must still separate words */
       else buf += node.textContent;
     }
     flush();
@@ -1575,6 +1593,7 @@ function readerChapterDone() {
     setReaderIcon("play");
     updateReaderStatus("the end");
     saveReaderProgress();
+    if (audioEl) audioEl.pause(); /* like every other park path — the OS transport must not stay "playing" */
     if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
   }
 }
@@ -1703,27 +1722,45 @@ engineBtns.addEventListener("click", ev => {
    half-typed text would kill the reading in progress and overwrite a working
    address. Keystrokes are only flushed to storage if the app is about to be
    suspended (iOS can suspend the PWA before blur ever fires). */
-qwenUrl.addEventListener("change", () => {
-  qwenServer = normalizeServerUrl(qwenUrl.value);
-  qwenUrl.value = qwenServer;
-  try { localStorage.setItem("lantern.qwenUrl", qwenServer); } catch {}
-  clearQwenDraft();
-  applyEngineUI();
-  readerSettingsChanged();
-});
-qwenVoice.addEventListener("change", () => {
-  qwenVoiceName = qwenVoice.value.trim() || "cherry";
-  try { localStorage.setItem("lantern.qwenVoice", qwenVoiceName); } catch {}
-  clearQwenDraft();
-  readerSettingsChanged();
-});
-qwenKey.addEventListener("change", () => {
-  qwenApiKey = qwenKey.value.trim();
-  qwenKey.value = qwenApiKey;
-  try { localStorage.setItem("lantern.qwenKey", qwenApiKey); } catch {}
-  clearQwenDraft();
-  readerSettingsChanged();
-});
+/* commit = adopt what is in the field as the live config. Bound to `change` AND
+   `blur`: a draft restored by script leaves the field pristine, so `change` alone
+   would never fire for it and the displayed address would never be used. The
+   equality guards make a no-op blur free — a focus-and-leave never restarts the
+   sentence being read, and a change-then-blur pair applies only once. */
+function commitQwenUrl() {
+  const v = normalizeServerUrl(qwenUrl.value);
+  qwenUrl.value = v;
+  if (v !== qwenServer) {
+    qwenServer = v;
+    try { localStorage.setItem("lantern.qwenUrl", v); } catch {}
+    applyEngineUI();
+    readerSettingsChanged();
+  }
+  flushQwenFields(); /* clears the draft once nothing is uncommitted */
+}
+function commitQwenVoice() {
+  const v = qwenVoice.value.trim() || "cherry";
+  if (v !== qwenVoiceName) {
+    qwenVoiceName = v;
+    try { localStorage.setItem("lantern.qwenVoice", v); } catch {}
+    readerSettingsChanged();
+  }
+  flushQwenFields();
+}
+function commitQwenKey() {
+  const v = qwenKey.value.trim();
+  qwenKey.value = v;
+  if (v !== qwenApiKey) {
+    qwenApiKey = v;
+    try { localStorage.setItem("lantern.qwenKey", v); } catch {}
+    readerSettingsChanged();
+  }
+  flushQwenFields();
+}
+for (const [el, commit] of [[qwenUrl, commitQwenUrl], [qwenVoice, commitQwenVoice], [qwenKey, commitQwenKey]]) {
+  el.addEventListener("change", commit);
+  el.addEventListener("blur", commit);
+}
 /* uncommitted text gets its own storage key: it must survive an iOS suspend so the
    user can finish the edit, but it must never become the live config — a half-typed
    (or half-deleted) address would silently replace a working one with no fallback */
@@ -1753,6 +1790,15 @@ try {
     if (typeof d.k === "string") qwenKey.value = d.k;
   }
 } catch { clearQwenDraft(); }
+/* a draft may only shadow a WORKING value. With nothing ever committed there is
+   nothing to protect, and a field-only restore would leave the chip and every
+   read telling the user to enter the address they can already see. */
+if (!qwenServer && normalizeServerUrl(qwenUrl.value)) {
+  qwenServer = normalizeServerUrl(qwenUrl.value);
+  qwenUrl.value = qwenServer;
+  try { localStorage.setItem("lantern.qwenUrl", qwenServer); } catch {}
+  clearQwenDraft();
+}
 applyEngineUI();
 libVoiceBtn.addEventListener("click", () => openSheet(setSheet));
 

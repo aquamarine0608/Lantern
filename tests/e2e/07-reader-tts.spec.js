@@ -91,6 +91,8 @@ test.describe("reading books aloud", () => {
     await page.click('.sent[data-si="3"]'); // its final sentence
     await expect(page.locator("#rStatus")).toContainText("the end", { timeout: 15_000 });
     await expect(page.locator("#rIconPlay")).toBeVisible();
+    // the routed element must be paused too, or the lock screen keeps a live "playing" transport
+    expect(await page.evaluate(() => document.querySelector("audio").paused)).toBe(true);
   });
 
   test("after the end of the book, play starts reading again instead of wedging", async ({ page, mockTTS }) => {

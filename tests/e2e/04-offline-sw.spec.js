@@ -74,6 +74,19 @@ test.describe("service worker and offline", () => {
     await expect(page.locator("#addBookBtn")).toBeVisible();
   });
 
+  test("navigating to a sibling file never poisons the offline shell", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await warmUp(page);
+    // a top-level navigation to an in-scope asset must not be cached AS the app shell
+    await page.goto("/icon-180.png");
+    await page.goto("/#paste");
+
+    await setAppOffline(true);
+    await setCdnOffline(true);
+    await page.reload();
+    await expect(page.locator("#readBtn")).toBeVisible(); // the app, not PNG bytes
+  });
+
   test("the Google Fonts stylesheet is cached for offline use", async ({ page }) => {
     await warmUp(page);
     const fontsCached = await page.evaluate(async () => {
