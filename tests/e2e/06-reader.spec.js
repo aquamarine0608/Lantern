@@ -160,6 +160,23 @@ test.describe("reader view", () => {
     for (const t of texts) expect(/[\uD800-\uDBFF]\s*$/.test(t)).toBe(false); // no span ends on a lone high surrogate
   });
 
+  test("a TOC with sub-section entries still shows the chapter's own title", async ({ page }) => {
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "sections.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "Sectioned Book", subEntries: true }), // ch1.xhtml + ch1.xhtml#sec1 + ch1.xhtml#sec2
+    });
+    await page.click(".book");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    // sub-entry fragments collapse onto the chapter's file: the LAST entry must not win
+    await expect(page.locator("#rChapter")).toHaveText("Chapter One");
+    await page.click("#tocBtn");
+    await expect(page.locator("#tocList button").nth(0)).toHaveText(/^Chapter One$/);
+    await page.locator("#tocList button").nth(0).click();
+    // the real chapter heading keeps its heading styling too
+    await expect(page.locator(".sent").first()).toHaveText(/Chapter One/);
+  });
+
   test("back returns to the library", async ({ page }) => {
     await openFirstBook(page);
     await page.click("#backBtn");

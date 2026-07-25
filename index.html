@@ -343,7 +343,7 @@
     <div class="bar" id="bannerBar" hidden><i id="bannerFill"></i></div>
   </div>
 
-  <footer>Runs entirely on this device · Kokoro-82M · English</footer>
+  <footer id="appFooter">Runs entirely on this device · Kokoro-82M · English</footer>
 </div>
 
 <script>
@@ -387,7 +387,7 @@ const textEl = $("text"), countEl = $("count"), readBtn = $("readBtn"),
       modelState = $("modelState"), modelStateText = $("modelStateText"),
       voiceSel = $("voice"), speedsEl = $("speeds"), clearBtn = $("clearBtn"),
       viewLibrary = $("viewLibrary"), viewPaste = $("viewPaste"), viewReader = $("viewReader"),
-      addBookBtn = $("addBookBtn"), bookFile = $("bookFile"), shelf = $("shelf"), libEmpty = $("libEmpty"),
+      addBookBtn = $("addBookBtn"), bookFile = $("bookFile"), shelf = $("shelf"), libEmpty = $("libEmpty"), appFooter = $("appFooter"),
       pasteModeBtn = $("pasteModeBtn"), pasteBackBtn = $("pasteBackBtn"),
       backBtn = $("backBtn"), tocBtn = $("tocBtn"), fontBtn = $("fontBtn"),
       rBook = $("rBook"), rChapter = $("rChapter"), rScroll = $("rScroll"), rContent = $("rContent"),
@@ -1305,7 +1305,12 @@ function parseEpub(arrayBuf) {
       for (const a of tocNav ? tocNav.querySelectorAll("a[href]") : []) {
         const label = a.textContent.replace(/\s+/g, " ").trim();
         const href = a.getAttribute("href");
-        if (label && href) tocLabels.set(joinPath(dirOf(navPath), href), label);
+        if (label && href) {
+          /* sub-section links (ch1.xhtml#sec2) strip to the same file as their parent
+             chapter — first entry wins, which in document order is the chapter itself */
+          const key = joinPath(dirOf(navPath), href);
+          if (!tocLabels.has(key)) tocLabels.set(key, label);
+        }
       }
     } else {
       const ncxId = opf.querySelector("spine") && opf.querySelector("spine").getAttribute("toc");
@@ -1318,7 +1323,8 @@ function parseEpub(arrayBuf) {
           const srcAttr = src && src.getAttribute("src");
           if (lbl && srcAttr) {
             const label = lbl.textContent.replace(/\s+/g, " ").trim();
-            if (label) tocLabels.set(joinPath(dirOf(ncxPath), srcAttr), label);
+            const key = joinPath(dirOf(ncxPath), srcAttr); /* nested navPoints collapse onto the parent's file — keep the first */
+            if (label && !tocLabels.has(key)) tocLabels.set(key, label);
           }
         }
       }
@@ -1672,6 +1678,11 @@ async function readerPlayFrom(si) {
   const myAbort = new AbortController();
   rd.abortCtl = myAbort;
   rd.playing = true; rd.started = true;
+  /* commit the target BEFORE the engine warm-up: rd.si is the reader's only record
+     of "where we are", and ensureEngineReady() can park below for a whole model
+     load. Skips (rd.si + d), a settings change (readerPlayFrom(rd.si)), the status
+     line and saveReaderProgress would all act on the PREVIOUS sentence otherwise. */
+  rd.si = si;
   setReaderIcon("busy");
   updateReaderStatus(); /* rd.started && !rd.genDone → truthful "generating…" line, not "tap play to listen" */
   (async () => {
@@ -1750,6 +1761,7 @@ async function readerPlayFrom(si) {
     src.start(at);
     rd.timings.push({ si: i, start: at, end: at + buf.duration });
     rd.scheduleT = at + buf.duration;
+    src.onended = () => { src.__ended = true; }; /* 'ended' fires exactly once — remember it for the finish() fallback below */
     rd.sources.push(src);
     /* release audio already played: a source node still referenced from JS pins its
        whole AudioBuffer, so the 90 s cap above bounds only the PENDING audio — a
@@ -1796,13 +1808,28 @@ async function readerPlayFrom(si) {
         return;
       }
     } else rd.emptyRun = 0;
+    /* drained while paused (or iOS-interrupted): park at the chapter end rather
+       than auto-advancing, which would resume audio the user explicitly stopped */
+    if (rd.ctx && rd.ctx.state !== "running") {
+      rd.playing = false; rd.started = false;
+      setReaderIcon("play");
+      updateReaderStatus("tap play to continue");
+      if (audioEl) audioEl.pause();
+      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+      return;
+    }
     readerChapterDone();
   };
   const last = rd.sources[rd.sources.length - 1];
   if (last) {
     last.onended = finish;
-    /* the final buffer can drain before the handler is attached */
-    if (rd.ctx.state === "running" && rd.ctx.currentTime >= rd.scheduleT - 0.01) finish();
+    /* 'ended' fires exactly once: if the final buffer drained during the awaits
+       above (a 30 s server timeout, or trailing sentences that synthesize to
+       nothing), the handler just attached will never run. Do NOT gate this
+       fallback on a RUNNING context — a pause, or an iOS "interrupted", after
+       the drain freezes the clock past scheduleT and would kill BOTH paths,
+       leaving rd.started true with nothing scheduled and no generation loop. */
+    if (last.__ended || rd.ctx.currentTime >= rd.scheduleT - 0.01) finish();
   } else finish();
   })();
 }
@@ -1931,6 +1958,11 @@ function applyEngineUI() {
   else if (tts) setModelState("ready", "voice model ready");
   else if (modelLoading) setModelState("busy", modelBusyText || "downloading voice model"); /* restore the load-in-progress chip after an engine round-trip */
   else setModelState("", "voice model not loaded");
+  /* "runs entirely on this device" is a privacy claim — it must not stand while
+     the server engine is streaming every sentence to the user's machine */
+  appFooter.textContent = engine === "qwen"
+    ? "Qwen3-TTS · streamed from your server"
+    : "Runs entirely on this device · Kokoro-82M · English";
 }
 function setEngine(e) {
   if (engine === e) return;

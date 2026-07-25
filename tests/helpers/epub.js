@@ -29,7 +29,7 @@ const xhtml = (title, paras, divs = false) => `<?xml version="1.0" encoding="utf
   : `<h2>${title}</h2>\n${paras.map((p) => `<p>${p}</p>`).join("\n")}`}
 </body></html>`;
 
-function makeEpub({ title = "The Test Book", author = "Ada Author", creators, chapters = DEFAULT_CHAPTERS, cover = true, divs = false, encryption } = {}) {
+function makeEpub({ title = "The Test Book", author = "Ada Author", creators, chapters = DEFAULT_CHAPTERS, cover = true, divs = false, encryption, subEntries = false } = {}) {
   const files = {};
   const manifest = [];
   const spine = [];
@@ -50,7 +50,9 @@ function makeEpub({ title = "The Test Book", author = "Ada Author", creators, ch
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
 <head><title>Contents</title></head><body>
 <nav epub:type="toc"><ol>
-${chapters.map((c, i) => `<li><a href="ch${i + 1}.xhtml">${c.title}</a></li>`).join("\n")}
+${chapters.map((c, i) => `<li><a href="ch${i + 1}.xhtml">${c.title}</a>${subEntries
+    ? `<ol><li><a href="ch${i + 1}.xhtml#sec1">${c.title} — Section 1</a></li><li><a href="ch${i + 1}.xhtml#sec2">${c.title} — Section 2</a></li></ol>`
+    : ""}</li>`).join("\n")}
 </ol></nav></body></html>`);
 
   if (cover) files["OEBPS/cover.png"] = new Uint8Array(PNG_1x1);

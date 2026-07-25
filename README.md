@@ -1,6 +1,6 @@
 # Lantern — a pocket audiobook reader with an on-device AI voice (Kokoro-82M)
 
-A single-page web app that turns DRM-free **EPUBs** — and any pasted text — into listening material, with the AI voice (Kokoro-82M) running entirely on your device via WebAssembly. Nothing is uploaded anywhere, and after the first run it works fully offline, airplane mode included.
+A single-page web app that turns DRM-free **EPUBs** — and any pasted text — into listening material, with the AI voice (Kokoro-82M) running entirely on your device via WebAssembly. On the on-device engine nothing is uploaded anywhere, and after the first run it works fully offline, airplane mode included. (The optional Qwen3-TTS engine is the one exception — it sends each sentence to the server you configure; see [Voice engines](#voice-engines).)
 
 **App files:** `index.html` · `sw.js` · `manifest.webmanifest` · `icon-180.png` · `icon-512.png` (the `tests/` folder is a dev-only end-to-end suite — deploying it does no harm, but it isn't needed)
 
@@ -16,7 +16,7 @@ A single-page web app that turns DRM-free **EPUBs** — and any pasted text — 
 
 **On-device (default).** Kokoro-82M runs inside the browser via WebAssembly. Private, offline after the first model download, works everywhere.
 
-**Qwen3-TTS (your server).** [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) (Apache-2.0, 0.6B/1.7B) is a much bigger, LM-based voice that **requires a CUDA GPU — it cannot run inside a phone browser** (no browser/ONNX-web runtime exists as of mid-2026). Lantern therefore streams it sentence-by-sentence from a computer you own:
+**Qwen3-TTS (your server).** [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) (Apache-2.0, 0.6B/1.7B) is a much bigger, LM-based voice that **requires a CUDA GPU — it cannot run inside a phone browser** (no browser/ONNX-web runtime exists as of mid-2026). Lantern therefore streams it sentence-by-sentence from a computer you own — each sentence's text is sent to that server, and the audio comes back:
 
 1. Run Qwen3-TTS behind any **OpenAI-compatible speech endpoint** (`POST /v1/audio/speech`, WAV output) — several community servers for it work out of the box.
 2. The endpoint must be reachable from the phone over **HTTPS** with **CORS enabled** (a page served over HTTPS cannot call plain-HTTP LAN addresses). The easiest route: `tailscale serve` or a Caddy/cloudflared tunnel in front of the server.
@@ -50,7 +50,7 @@ Open http://localhost:8000. Note: viewing it from your phone over LAN (`http://<
 
 - **Books:** Add a book → tap it → tap play (or tap any sentence). Generation happens sentence by sentence on-device; keep the app in the foreground while it synthesizes — iOS pauses background computation, though already-generated audio keeps playing with the screen locked.
 - **Pasted text:** paste → pick a voice and speed → **Read aloud**. When it finishes, the waveform becomes a scrubber and **Save WAV** exports the audio to Files.
-- Your books, reading positions, text, voice, speed, and text size are all remembered between visits. Nothing ever leaves the device.
+- Your books, reading positions, text, voice, speed, and text size are all remembered between visits, in the browser's own storage on this device — there is no Lantern account and no sync server. On the on-device engine no text ever leaves the device. With **Engine = Qwen3-TTS**, each sentence is sent to the `/v1/audio/speech` server you configured (so the book's text passes over that connection, and through any tunnel in front of it), and the API key you enter is kept in the browser's `localStorage`.
 - EPUBs must be DRM-free (personal backups, Project Gutenberg, Standard Ebooks, purchased DRM-free books, etc.).
 
 ## Notes & knobs
@@ -63,7 +63,7 @@ Open http://localhost:8000. Note: viewing it from your phone over LAN (`http://<
 
 ## Testing
 
-`tests/` holds a Playwright end-to-end suite (92 tests) that drives the real app in Chromium against a mocked Kokoro engine, a mock OpenAI-compatible Qwen3-TTS server, and generated fixture EPUBs (no model downloads): library import/remove, the reader with sentence highlighting, tap-to-read, skips, chapter auto-advance, resume-after-reload, both voice engines (including server failures and engine switching), paste-mode generation and WAV export, every error path, refresh persistence, and true offline service-worker behavior (the local test servers can drop their sockets to simulate airplane mode).
+`tests/` holds a Playwright end-to-end suite (96 tests) that drives the real app in Chromium against a mocked Kokoro engine, a mock OpenAI-compatible Qwen3-TTS server, and generated fixture EPUBs (no model downloads): library import/remove, the reader with sentence highlighting, tap-to-read, skips, chapter auto-advance, resume-after-reload, both voice engines (including server failures and engine switching), paste-mode generation and WAV export, every error path, refresh persistence, and true offline service-worker behavior (the local test servers can drop their sockets to simulate airplane mode).
 
 ```
 cd tests

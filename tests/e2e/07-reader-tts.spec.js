@@ -237,6 +237,39 @@ test.describe("reading books aloud", () => {
     await expect(page.locator("#rPlay")).not.toHaveClass(/working/);
   });
 
+  test("pausing after the chapter's audio has drained parks cleanly instead of wedging", async ({ page, mockTTS }) => {
+    // one real sentence (0.4 s of audio) + a trailing sentence that synthesizes to
+    // nothing: the last buffer drains long before the generation loop exits, and the
+    // pause suspends the context in exactly that window
+    await mockTTS({ loadDelay: 20, chunkDelay: 2000, chunkSeconds: 0.4, emptyChunkAt: 1 });
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "solo.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "Solo", chapters: [{ title: "Solo Chapter", paras: ["Only sentence here."] }] }),
+    });
+    await page.click(".book");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await page.click("#rPlay");
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBe(0);
+    await page.waitForTimeout(1000); // sentence 0's audio has fully drained; sentence 1 is mid-generate
+    await page.click("#rPlay"); // pause with nothing scheduled
+    const gensAtPause = await page.evaluate(() => window.__TTS_GEN);
+    await page.waitForTimeout(1800); // the generation loop exits while the context is suspended
+    // the reader must park restartably — not freeze with a dead transport
+    await expect(page.locator("#rIconPlay")).toBeVisible();
+    await expect(page.locator("#rStatus")).toContainText("tap play to continue");
+    await page.click("#rPlay"); // must start a NEW run (fresh synthesis), not resume an empty context
+    await expect.poll(() => page.evaluate(() => window.__TTS_GEN), { timeout: 15_000 }).toBeGreaterThan(gensAtPause);
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(0);
+  });
+
+  test("skips during the engine warm-up act on the tapped sentence, not the previous position", async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS, { loadDelay: 2500 });
+    await page.click('.sent[data-si="2"]'); // readerPlayFrom(2) parks on the model load
+    await page.click("#rNext"); // must step 2 → 3, not from a stale previous position
+    await expect.poll(() => speakingSi(page), { timeout: 20_000 }).toBe(3);
+  });
+
   test("books read aloud fully offline after one online visit", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5 });
     await page.goto("/");
