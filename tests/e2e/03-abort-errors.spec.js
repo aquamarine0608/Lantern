@@ -8,7 +8,7 @@ const LONG_TEXT =
 test.describe("stopping and error paths", () => {
   test("stop mid-generation keeps the partial audio as a seekable file", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 400, chunkSeconds: 0.6 });
-    await page.goto("/");
+    await page.goto("/#paste");
     await startRead(page, LONG_TEXT);
     await expect(page.locator("#statusLine")).toContainText(/sentence [2-9]/, { timeout: 20_000 });
     await page.click("#readBtn"); // acts as Stop
@@ -22,7 +22,7 @@ test.describe("stopping and error paths", () => {
 
   test("stop before any audio returns cleanly to idle", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 5000, chunkSeconds: 0.5 });
-    await page.goto("/");
+    await page.goto("/#paste");
     await startRead(page);
     await expect(page.locator("#readBtn")).toHaveText("Stop reading");
     await page.click("#readBtn");
@@ -32,7 +32,7 @@ test.describe("stopping and error paths", () => {
 
   test("model download failure shows the error, cleans up audio contexts, and retry works", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 100, loadFail: true, chunkDelay: 50, chunkSeconds: 0.4 });
-    await page.goto("/");
+    await page.goto("/#paste");
     await startRead(page);
     await expect(page.locator("#banner")).toBeVisible({ timeout: 10_000 });
     await expect(page.locator("#bannerText")).toContainText("Couldn't fetch the voice model");
@@ -53,7 +53,7 @@ test.describe("stopping and error paths", () => {
 
   test("synthesis failure mid-stream keeps the partial audio and shows the error", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 100, chunkSeconds: 0.5, streamFailAfter: 2 });
-    await page.goto("/");
+    await page.goto("/#paste");
     await startRead(page, LONG_TEXT);
     await expect(page.locator("#bannerText")).toContainText("Something went wrong", { timeout: 15_000 });
     await waitForFileMode(page, 20_000);
@@ -64,7 +64,7 @@ test.describe("stopping and error paths", () => {
 
   test("synthesis failure before any audio returns to idle — no phantom empty player", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 100, chunkSeconds: 0.5, streamFailAfter: 0 });
-    await page.goto("/");
+    await page.goto("/#paste");
     await startRead(page);
     await expect(page.locator("#bannerText")).toContainText("Something went wrong", { timeout: 15_000 });
     await expect(page.locator("#readBtn")).toHaveText("Read aloud");
@@ -79,7 +79,7 @@ test.describe("stopping and error paths", () => {
 
   test("a reading where every chunk is empty returns to idle instead of an empty player", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0 });
-    await page.goto("/");
+    await page.goto("/#paste");
     await startRead(page, "One. Two.");
     await expect(page.locator("#readBtn")).toHaveText("Read aloud", { timeout: 15_000 });
     await expect(page.locator("#player")).toBeHidden();
@@ -88,7 +88,7 @@ test.describe("stopping and error paths", () => {
 
   test("an empty audio chunk from the engine is skipped without an error", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5, emptyChunkAt: 1 });
-    await page.goto("/");
+    await page.goto("/#paste");
     await startRead(page);
     await waitForFileMode(page);
     await expect(page.locator("#banner")).toBeHidden(); // no error surfaced
@@ -98,7 +98,7 @@ test.describe("stopping and error paths", () => {
 
   test("starting a new read from file mode resets the previous session cleanly", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
-    await page.goto("/");
+    await page.goto("/#paste");
     await startRead(page, "First short reading. It has two sentences.");
     await waitForFileMode(page);
 

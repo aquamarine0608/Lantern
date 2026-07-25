@@ -63,6 +63,19 @@ export class KokoroTTS {
     return new KokoroTTS();
   }
 
+  /* non-streaming API used by the book reader: one sentence in, one RawAudio out */
+  async generate(text, { voice, speed } = {}) {
+    const cfg = CFG();
+    const i = (globalThis.__TTS_GEN = (globalThis.__TTS_GEN || 0) + 1) - 1;
+    await sleep(cfg.chunkDelay);
+    if (cfg.streamFailAfter >= 0 && i >= cfg.streamFailAfter) throw new Error("mock: synthesis failed");
+    const n = i === cfg.emptyChunkAt ? 0 : Math.round(24000 * cfg.chunkSeconds);
+    const f32 = new Float32Array(n);
+    const freq = 220 + 40 * (i % 5);
+    for (let j = 0; j < n; j++) f32[j] = Math.sin((2 * Math.PI * freq * j) / 24000) * 0.3;
+    return { audio: f32, sampling_rate: 24000 };
+  }
+
   async *stream(splitter, { voice, speed } = {}) {
     const cfg = CFG();
     globalThis.__TTS_STREAMS = (globalThis.__TTS_STREAMS || 0) + 1;

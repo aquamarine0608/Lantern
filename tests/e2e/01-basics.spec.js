@@ -3,7 +3,7 @@ const { test, expect, startRead, waitForFileMode, SAMPLE_TEXT } = require("../he
 
 test.describe("basics and happy path", () => {
   test("loads in a clean idle state", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/#paste");
     await expect(page.locator("#modelStateText")).toHaveText("voice model not loaded");
     await expect(page.locator("#count")).toHaveText("0 words");
     await expect(page.locator("#readBtn")).toHaveText("Read aloud");
@@ -12,7 +12,7 @@ test.describe("basics and happy path", () => {
   });
 
   test("word count updates and Clear works", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/#paste");
     await page.fill("#text", "hello world there");
     await expect(page.locator("#count")).toHaveText("3 words");
     await page.fill("#text", "hello");
@@ -23,7 +23,7 @@ test.describe("basics and happy path", () => {
   });
 
   test("Read with empty text stays idle", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/#paste");
     await page.click("#readBtn");
     await page.fill("#text", "   \n  ");
     await page.click("#readBtn");
@@ -33,7 +33,7 @@ test.describe("basics and happy path", () => {
 
   test("full flow: model download banner → generation → live playback → file mode → valid WAV", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 500, chunkDelay: 250, chunkSeconds: 0.8 });
-    await page.goto("/");
+    await page.goto("/#paste");
     await startRead(page);
 
     // generating UI
@@ -72,7 +72,7 @@ test.describe("basics and happy path", () => {
 
   test("file mode: play restarts, pause pauses, ended resets the icon", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5 });
-    await page.goto("/");
+    await page.goto("/#paste");
     await startRead(page);
     await waitForFileMode(page);
 
@@ -103,7 +103,7 @@ test.describe("basics and happy path", () => {
 
   test("file mode: tapping the wave seeks", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 1.0 });
-    await page.goto("/");
+    await page.goto("/#paste");
     await startRead(page);
     await waitForFileMode(page);
 

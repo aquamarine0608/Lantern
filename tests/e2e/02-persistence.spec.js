@@ -2,21 +2,21 @@ const { test, expect, startRead, waitForFileMode } = require("../helpers/fixture
 
 test.describe("persistence across refreshes", () => {
   test("text, voice and speed survive a reload", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/#paste");
     await page.fill("#text", "Remember me after the refresh.");
     await page.selectOption("#voice", "bm_fable");
-    await page.click('.speeds button[data-s="1.5"]');
+    await page.click('#speeds button[data-s="1.5"]');
     await page.waitForTimeout(600); // text save is debounced at 400 ms
 
     await page.reload();
     await expect(page.locator("#text")).toHaveValue("Remember me after the refresh.");
     await expect(page.locator("#count")).toHaveText("5 words");
     await expect(page.locator("#voice")).toHaveValue("bm_fable");
-    await expect(page.locator('.speeds button[data-s="1.5"]')).toHaveClass(/on/);
+    await expect(page.locator('#speeds button[data-s="1.5"]')).toHaveClass(/on/);
   });
 
   test("text typed right before a refresh is not lost", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/#paste");
     await page.fill("#text", "Typed and instantly refreshed.");
     // reload immediately — well inside the 400 ms debounce window
     await page.reload();
@@ -25,14 +25,14 @@ test.describe("persistence across refreshes", () => {
 
   test("an invalid stored speed falls back to a real speed button", async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem("lantern.speed", "0.9"));
-    await page.goto("/");
-    await expect(page.locator(".speeds button.on")).toHaveCount(1);
+    await page.goto("/#paste");
+    await expect(page.locator("#speeds button.on")).toHaveCount(1);
   });
 
   test("an unknown stored voice falls back to a valid option and reading still works", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.addInitScript(() => localStorage.setItem("lantern.voice", "zz_removed_voice"));
-    await page.goto("/");
+    await page.goto("/#paste");
     const value = await page.locator("#voice").inputValue();
     expect(value).not.toBe(""); // must not be left with no selection
     await startRead(page);
@@ -41,7 +41,7 @@ test.describe("persistence across refreshes", () => {
 
   test("once downloaded, the model warms up by itself on the next visit", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
-    await page.goto("/");
+    await page.goto("/#paste");
     await startRead(page);
     await waitForFileMode(page);
 
@@ -55,7 +55,7 @@ test.describe("persistence across refreshes", () => {
 
   test("reload mid-generation comes back to a clean idle page with the text intact", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 400, chunkSeconds: 0.5 });
-    await page.goto("/");
+    await page.goto("/#paste");
     await page.fill("#text", "One long sentence here. Another one follows. And a third for good measure. Then a fourth.");
     await page.waitForTimeout(600);
     await page.click("#readBtn");

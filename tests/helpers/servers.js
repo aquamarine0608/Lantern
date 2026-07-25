@@ -83,6 +83,7 @@ function ensureCert() {
 function startCdnServer(state) {
   const { key, cert } = ensureCert();
   const mockModule = fs.readFileSync(path.join(__dirname, "mock-kokoro.web.js"));
+  const fflateModule = fs.readFileSync(path.join(__dirname, "vendor", "fflate-browser.js"));
   const server = https.createServer({ key, cert }, (req, res) => {
     if (handleControl(state, "cdnOffline", req, res)) return;
     if (state.cdnOffline) {
@@ -91,13 +92,13 @@ function startCdnServer(state) {
     }
     const host = (req.headers.host || "").split(":")[0];
     const pathname = new URL(req.url, "https://x").pathname;
-    if (host === "cdn.jsdelivr.net" && pathname.endsWith("/kokoro.web.js")) {
+    if (host === "cdn.jsdelivr.net" && (pathname.endsWith("/kokoro.web.js") || /\/fflate@[^/]+\/esm\/browser\.js$/.test(pathname))) {
       res.writeHead(200, {
         "content-type": "text/javascript; charset=utf-8",
         "access-control-allow-origin": "*",
         "cache-control": "no-store",
       });
-      res.end(mockModule);
+      res.end(pathname.endsWith("/kokoro.web.js") ? mockModule : fflateModule);
       return;
     }
     if (host === "fonts.googleapis.com") {

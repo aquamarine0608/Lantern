@@ -2,7 +2,7 @@ const { test, expect, startRead } = require("../helpers/fixtures");
 
 test("environment probe: mock CDN, web audio clock, basic generation", async ({ page, mockTTS }) => {
   await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
-  await page.goto("/");
+  await page.goto("/#paste");
   await expect(page.locator(".wordmark")).toContainText("Lanter");
 
   // the mock module must have been served in place of the real CDN build

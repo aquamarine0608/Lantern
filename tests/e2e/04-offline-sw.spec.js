@@ -5,8 +5,8 @@ const { setAppOffline, setCdnOffline } = require("../helpers/net");
    every socket while "offline", which also applies to fetches issued by the
    service worker (browser-level offline emulation does not). */
 
-async function warmUp(page) {
-  await page.goto("/");
+async function warmUp(page, path = "/#paste") {
+  await page.goto(path);
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.waitForFunction(() => !!navigator.serviceWorker.controller);
   // a controlled reload routes the CDN module through the SW so it lands in the CDN cache
@@ -43,7 +43,7 @@ test.describe("service worker and offline", () => {
 
   test("offline works even after only the very first visit — no second load required", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
-    await page.goto("/");
+    await page.goto("/#paste");
     await page.evaluate(() => navigator.serviceWorker.ready);
     // the install-time precache must cover the CDN module without any reload
     await page.waitForFunction(async () => {
@@ -71,7 +71,7 @@ test.describe("service worker and offline", () => {
 
     // installed PWAs and shared links often carry query params
     await page.goto("/?source=homescreen");
-    await expect(page.locator("#readBtn")).toBeVisible();
+    await expect(page.locator("#addBookBtn")).toBeVisible();
   });
 
   test("the Google Fonts stylesheet is cached for offline use", async ({ page }) => {
