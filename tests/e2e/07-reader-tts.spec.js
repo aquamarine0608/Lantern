@@ -250,8 +250,10 @@ test.describe("reading books aloud", () => {
     await page.click(".book");
     await expect(page.locator("#viewReader")).toBeVisible();
     await page.click("#rPlay");
-    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBe(0);
-    await page.waitForTimeout(1000); // sentence 0's audio has fully drained; sentence 1 is mid-generate
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBe(0); // highlight appears at pump start (~0.3 s)
+    // timeline: sentence 0 generates 0→2 s, its 0.4 s of audio ends ~2.5 s, and the
+    // empty sentence 1 generates 2→4 s. Pause at ~3.2 s: audio drained, loop still running.
+    await page.waitForTimeout(2900);
     await page.click("#rPlay"); // pause with nothing scheduled
     const gensAtPause = await page.evaluate(() => window.__TTS_GEN);
     await page.waitForTimeout(1800); // the generation loop exits while the context is suspended
