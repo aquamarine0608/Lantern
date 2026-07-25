@@ -2,12 +2,13 @@
    The ~90 MB Kokoro model is cached separately by transformers.js (browser Cache API),
    so after one successful run the whole app works in airplane mode. */
 
-const VERSION = "v2";
+const VERSION = "v3";
 const SHELL = `lantern-shell-${VERSION}`;
 const CDN = `lantern-cdn-${VERSION}`;
 const SHELL_FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-180.png", "./icon-512.png"];
 const CDN_PRECACHE = [
   "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js",
+  "https://cdn.jsdelivr.net/npm/fflate@0.8.3/esm/browser.js",
   "https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap",
 ];
 
