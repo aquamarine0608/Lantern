@@ -148,7 +148,7 @@ test.describe("reading books aloud", () => {
     await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(0);
     await page.click("#fontBtn");
     await page.click('#rSpeeds button[data-s="1.5"]');
-    await page.click("#sheetBackdrop");
+    await page.click(".sheet:not([hidden]) .sheet-done");
     await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(0);
     await expect(page.locator("#rIconPause")).toBeVisible();
   });

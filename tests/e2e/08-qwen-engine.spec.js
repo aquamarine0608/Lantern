@@ -1,6 +1,7 @@
 const { test, expect, startRead, waitForFileMode } = require("../helpers/fixtures");
 const { importEpub } = require("../helpers/epub");
-const { setQwenOffline, setQwenHang, getQwenRequests } = require("../helpers/net");
+const { setQwenOffline, setQwenHang, setQwenFail, setQwenRate, getQwenRequests } = require("../helpers/net");
+const { makeEpub } = require("../helpers/epub");
 
 const QWEN_URL = "http://127.0.0.1:4174";
 
@@ -10,7 +11,7 @@ async function enableQwen(page, url = QWEN_URL) {
   await page.click('#engineBtns button[data-e="qwen"]');
   await page.fill("#qwenUrl", url);
   await page.locator("#qwenUrl").blur();
-  await page.click("#sheetBackdrop");
+  await page.click(".sheet:not([hidden]) .sheet-done");
 }
 
 const speakingSi = async (page) => {
@@ -22,6 +23,54 @@ test.describe("Qwen3-TTS server engine", () => {
   test.afterEach(async () => {
     await setQwenOffline(false);
     await setQwenHang(false);
+    await setQwenFail(false);
+    await setQwenRate(22050);
+  });
+
+  test("pasting the full endpoint URL still works — the path is not doubled", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await enableQwen(page, QWEN_URL + "/v1/audio/speech"); // what the settings hint itself names
+    await page.click("#pasteModeBtn");
+    await startRead(page, "Only one sentence here.");
+    await waitForFileMode(page);
+  });
+
+  test("an HTTP error from the server surfaces the server-specific message", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await enableQwen(page);
+    await setQwenFail(true);
+    await page.click("#pasteModeBtn");
+    await startRead(page);
+    await expect(page.locator("#bannerText")).toContainText("Qwen3-TTS server", { timeout: 15_000 });
+    await expect(page.locator("#player")).toBeHidden();
+  });
+
+  test("48 kHz server audio is downsampled to the pipeline rate correctly", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await enableQwen(page);
+    await setQwenRate(48000);
+    await page.click("#pasteModeBtn");
+    await startRead(page, "First sentence here. Second sentence here.");
+    await waitForFileMode(page);
+    const duration = await page.evaluate(() => document.querySelector("audio").duration);
+    expect(Math.abs(duration - 1.0)).toBeLessThan(0.12); // 2 × 0.5 s regardless of source rate
+  });
+
+  test("a book that synthesizes to silence parks instead of racing to 'the end'", async ({ page, mockTTS }) => {
+    // kokoro engine with every chunk empty: the reader must not fast-forward the book
+    await mockTTS({ loadDelay: 20, chunkDelay: 30, chunkSeconds: 0 });
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "silent.epub", mimeType: "application/epub+zip", buffer: makeEpub({ title: "Silent Book" }),
+    });
+    await page.click(".book");
+    await page.click("#rPlay");
+    await expect(page.locator("#bannerText")).toContainText("isn't producing any audio", { timeout: 20_000 });
+    await expect(page.locator("#rIconPlay")).toBeVisible();
+    await expect(page.locator("#rStatus")).not.toContainText("the end");
   });
 
   test("Stop cancels instantly even when the server hangs mid-request", async ({ page, mockTTS }) => {
@@ -118,7 +167,7 @@ test.describe("Qwen3-TTS server engine", () => {
 
     await page.click("#pasteModeBtn");
     await startRead(page);
-    await expect(page.locator("#bannerText")).toContainText("Something went wrong", { timeout: 15_000 });
+    await expect(page.locator("#bannerText")).toContainText("Couldn't reach your Qwen3-TTS server", { timeout: 15_000 });
     await expect(page.locator("#readBtn")).toHaveText("Read aloud");
     await expect(page.locator("#player")).toBeHidden();
 
@@ -133,7 +182,7 @@ test.describe("Qwen3-TTS server engine", () => {
     await page.click("#libVoiceBtn");
     await page.fill("#qwenVoice", "ethan");
     await page.locator("#qwenVoice").blur();
-    await page.click("#sheetBackdrop");
+    await page.click(".sheet:not([hidden]) .sheet-done");
 
     await page.reload();
     await expect(page.locator("#modelStateText")).toHaveText("qwen3-tts · server voice");
@@ -154,7 +203,7 @@ test.describe("Qwen3-TTS server engine", () => {
     await page.click("#pasteBackBtn"); // the engine picker lives in the library / reader sheets
     await page.click("#libVoiceBtn");
     await page.click('#engineBtns button[data-e="kokoro"]');
-    await page.click("#sheetBackdrop");
+    await page.click(".sheet:not([hidden]) .sheet-done");
     await expect(page.locator("#modelStateText")).toHaveText("voice model not loaded");
 
     await page.click("#pasteModeBtn");
@@ -174,7 +223,7 @@ test.describe("Qwen3-TTS server engine", () => {
 
     await page.click("#fontBtn");
     await page.click('#engineBtns button[data-e="qwen"]'); // no server URL entered
-    await page.click("#sheetBackdrop");
+    await page.click(".sheet:not([hidden]) .sheet-done");
 
     await expect(page.locator("#bannerText")).toContainText("Set your Qwen3-TTS server first");
     await expect(page.locator("#rIconPlay")).toBeVisible();
@@ -185,16 +234,47 @@ test.describe("Qwen3-TTS server engine", () => {
     await page.click("#fontBtn");
     await page.fill("#qwenUrl", QWEN_URL);
     await page.locator("#qwenUrl").blur();
-    await page.click("#sheetBackdrop");
+    await page.click(".sheet:not([hidden]) .sheet-done");
     await page.click("#rPlay");
     await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(0);
+  });
+
+  test("typing in the server field never disturbs the chapter being read", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 1.5 });
+    await page.goto("/");
+    await enableQwen(page);
+    await importEpub(page);
+    await page.click(".book");
+    await page.click("#rPlay");
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBe(0);
+
+    await page.click("#fontBtn");
+    await page.locator("#qwenUrl").press("End");
+    await page.locator("#qwenUrl").press("9"); // half-typed edit, not committed
+    await page.waitForTimeout(600);
+    await expect(page.locator("#setSheet")).toBeVisible(); // no error yanked it away
+    await expect(page.locator("#banner")).toBeHidden();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(QWEN_URL); // stored address untouched
+    await expect(page.locator("#rIconPause")).toBeVisible(); // still reading
+  });
+
+  test("degenerate server addresses never count as configured", async ({ page }) => {
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.click('#engineBtns button[data-e="qwen"]');
+    for (const bad of ["https://", "/v1/audio/speech", "///"]) {
+      await page.fill("#qwenUrl", bad);
+      await page.locator("#qwenUrl").blur();
+      await expect(page.locator("#qwenUrl")).toHaveValue(""); // normalized away, not kept as "https:"
+      await expect(page.locator("#modelStateText")).toHaveText("qwen3-tts · set server address");
+    }
   });
 
   test("without a server address, reading explains what to do instead of hanging", async ({ page }) => {
     await page.goto("/");
     await page.click("#libVoiceBtn");
     await page.click('#engineBtns button[data-e="qwen"]');
-    await page.click("#sheetBackdrop"); // no URL entered
+    await page.click(".sheet:not([hidden]) .sheet-done"); // no URL entered
     await expect(page.locator("#modelStateText")).toHaveText("qwen3-tts · set server address");
 
     await page.click("#pasteModeBtn");
