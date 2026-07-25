@@ -122,6 +122,7 @@
   .pbtn svg { width: 22px; height: 22px; fill: currentColor; }
   .pbtn.main svg { width: 26px; height: 26px; }
   .pbtn:disabled { opacity: .35; }
+  .pbtn.working { animation: breathe 2.2s ease-in-out infinite; } /* the reader's play button while synthesis warms up */
   .player-spacer { flex: 1; }
   .save-btn { border: 1px solid var(--line); background: var(--ink); color: var(--mist); border-radius: 12px; padding: 12px 16px; font-size: 14px; cursor: pointer; }
   .save-btn:not(:disabled) { color: var(--chalk); }
@@ -364,7 +365,7 @@
 })();
 </script>
 <script type="module">
-import { KokoroTTS, TextSplitterStream } from "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
+import { KokoroTTS } from "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
 import { unzipSync, strFromU8 } from "https://cdn.jsdelivr.net/npm/fflate@0.8.3/esm/browser.js";
 
 /* ---------------- element refs ---------------- */
@@ -407,7 +408,39 @@ try {
 for (const b of speedsEl.children) b.classList.toggle("on", parseFloat(b.dataset.s) === speed);
 
 const SR = 24000;
-let tts = null, modelLoading = null, modelLoadQuiet = false, modelBusyText = "";
+let tts = null, modelLoading = null, modelLoadQuiet = false, modelBusyText = "", modelWasCached = false;
+
+/* kokoro-js fetches a voice's ~0.5 MB style vector from huggingface.co the FIRST
+   time that voice is used, and from_pretrained() fetches none of them — so without
+   this, "reads offline" is a lie for every voice the user hasn't played yet. Warm
+   all offered voices into the same Cache under the same key kokoro-js reads.
+   Best-effort, idempotent, never blocking. */
+const voiceBinUrl = v => `https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/voices/${v}.bin`;
+let voicePrecacheRun = null;
+function precacheVoices() {
+  if (voicePrecacheRun || !("caches" in window)) return voicePrecacheRun;
+  voicePrecacheRun = (async () => {
+    const cache = await caches.open("kokoro-voices");
+    for (const o of voiceSel.options) { /* .options flattens the optgroups */
+      const url = voiceBinUrl(o.value);
+      if (await cache.match(url)) continue;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("voice fetch " + res.status);
+      await cache.put(url, res);
+    }
+  })().catch(() => { voicePrecacheRun = null; }); /* offline or partial: retry on the next chance */
+  return voicePrecacheRun;
+}
+addEventListener("online", () => { if (tts && engine === "kokoro") precacheVoices(); });
+
+/* after the model is cached the only network dependency left is the per-voice
+   style vector — say so instead of blaming the text */
+function kokoroErrorHtml(retryHint) {
+  const tail = retryHint ? " " + retryHint : "";
+  if (!navigator.onLine)
+    return `<b>This voice hasn't finished downloading.</b> Each voice needs a one-time 0.5 MB download and this device is offline. Reconnect, or pick a voice you've already listened to.`;
+  return `<b>Something went wrong while generating.</b>` + tail;
+}
 
 /* session state */
 let mode = "idle"; // idle | generating | done-live | file
@@ -480,13 +513,16 @@ function loadModel(quiet) {
       /* a user-initiated read joined the quiet warm-up — this is user-visible work
          now, so surface the banner and progress the quiet start skipped */
       modelLoadQuiet = false;
-      if (banner.hidden) showBanner(`<b>Downloading the voice model…</b> One time only.`, { bar: true });
+      if (banner.hidden) showBanner(modelWasCached
+        ? `<b>Loading the voice model…</b> Already saved on this device — no download.`
+        : `<b>Downloading the voice model…</b> One time only.`, { bar: true });
     } else if (!quiet) modelLoadQuiet = false;
     return modelLoading;
   }
   modelLoadQuiet = !!quiet;
   let cachedBefore = false;
   try { cachedBefore = localStorage.getItem("lantern.modelReady") === "1"; } catch {}
+  modelWasCached = cachedBefore;
   modelBusyText = cachedBefore ? "loading voice model" : "downloading voice model";
   setModelState("busy", modelBusyText);
   const seen = new Map();
@@ -502,7 +538,9 @@ function loadModel(quiet) {
         for (const f of seen.values()) { loaded += f.loaded; total += f.total; }
         const mb = x => (x / 1048576).toFixed(0);
         bannerFill.style.width = `${(loaded / total * 100).toFixed(1)}%`;
-        bannerText.innerHTML = `<b>Downloading voice model</b> — ${mb(loaded)} of ${mb(total)} MB. One time only.`;
+        bannerText.innerHTML = modelWasCached
+          ? `<b>Loading voice model</b> — ${mb(loaded)} of ${mb(total)} MB from this device.`
+          : `<b>Downloading voice model</b> — ${mb(loaded)} of ${mb(total)} MB. One time only.`;
       }
     },
   }).then(m => {
@@ -510,6 +548,7 @@ function loadModel(quiet) {
     if (!banner.hidden && !banner.classList.contains("error")) hideBanner();
     if (engine === "kokoro") setModelState("ready", "voice model ready"); /* don't clobber the chip if the user switched engines mid-download */
     try { localStorage.setItem("lantern.modelReady", "1"); } catch {}
+    precacheVoices(); /* fire-and-forget: never gate the first read on it */
     return m;
   }).catch(err => {
     modelLoading = null;
@@ -649,19 +688,23 @@ async function synthesizeSentence(text, signal) {
   return out.audio;
 }
 
-/* sentence-audio source for the paste view: kokoro streams, qwen goes sentence by sentence */
+/* sentence-audio source for the paste view: one synthesis call per pre-capped unit */
 async function* sentenceAudioStream(text, signal) {
+  const sessSpeed = speed; /* one paste reading keeps one speed */
   if (engine === "qwen") {
-    const sessSpeed = speed; /* one paste reading keeps one speed, like the kokoro stream does */
     for (const s of splitSentences(text)) yield await qwenSynthesize(s, signal, sessSpeed);
   } else {
-    const splitter = new TextSplitterStream();
-    const stream = tts.stream(splitter, { voice: voiceSel.value, speed });
-    /* feed pre-capped units — TextSplitterStream has no length cap of its own,
-       and kokoro silently truncates anything past its 510-token context */
-    for (const s of splitSentences(text)) splitter.push(s + "\n");
-    splitter.close();
-    for await (const { audio } of stream) yield audio.audio;
+    /* deliberately NOT TextSplitterStream: it only honours a terminator (even "\n")
+       while its quote/bracket stack is empty, so one unmatched " or ' — a plural
+       possessive, an opening dialogue quote, a stray paren — silently merges every
+       later unit into a single blob that kokoro then truncates at its 510-token
+       context. Per-unit generate() is what the reader does and keeps the cap real. */
+    const sessVoice = voiceSel.value;
+    for (const s of splitSentences(text)) {
+      if (signal && signal.aborted) throw new DOMException("cancelled", "AbortError");
+      const out = await tts.generate(s, { voice: sessVoice, speed: sessSpeed });
+      yield out.audio;
+    }
   }
 }
 
@@ -832,6 +875,18 @@ function ensureAudioEl() {
       if (ev === "pause" && rd.playing && !audioEl.srcObject) return; /* teardown path */
       if (ev === "pause" && rd.playing) readerToggle(false);
       else if (ev === "play" && !rd.playing) readerToggle(true);
+      return;
+    }
+    /* the paste view's live session has the same clock: ctx.currentTime keeps running
+       and scheduled buffers keep draining into a paused element, so an OS pause would
+       consume unheard audio while the icon and timer still claim "playing" */
+    if ((mode === "generating" || mode === "done-live") && ctx) {
+      if (ev === "pause") {
+        if (!audioEl.srcObject) return; /* resetSession/switchToFile teardown */
+        if (ctx.state === "running") togglePlay(false);
+      } else if (ev === "play" && ctx.state !== "running" && ctx.state !== "closed") {
+        togglePlay(true);
+      }
     }
   });
 }
@@ -981,7 +1036,7 @@ readBtn.addEventListener("click", async () => {
       streamFailed = true;
       showBanner(engine === "qwen"
         ? qwenErrorHtml(err)
-        : `<b>Something went wrong while generating.</b> Try again with a shorter text, or reload the page.`, { error: true });
+        : kokoroErrorHtml("Try again with a shorter text, or reload the page."), { error: true });
     }
   }
 
@@ -1031,6 +1086,16 @@ function stopQuickRead() {
   player.hidden = true;
   readBtn.textContent = "Read aloud";
   readBtn.classList.remove("stopping", "working");
+  /* the session is gone, not parked: without this the OS transport keeps claiming
+     "playing", and its stale play handler would fall through togglePlay() into
+     setMediaSession(true), re-asserting it against a closed context forever */
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.playbackState = "paused";
+    try {
+      navigator.mediaSession.setActionHandler("play", null);
+      navigator.mediaSession.setActionHandler("pause", null);
+    } catch {}
+  }
 }
 
 /* ================================================================
@@ -1592,7 +1657,7 @@ async function readerPlayFrom(si) {
         if (myToken === rd.token) {
           showBanner(engine === "qwen"
             ? qwenErrorHtml(err, "Tap a sentence to try again.")
-            : `<b>Something went wrong while generating.</b> Tap a sentence to try again.`, { error: true });
+            : kokoroErrorHtml("Tap a sentence to try again."), { error: true });
           rd.genDone = true; updateReaderStatus();
         }
         break;

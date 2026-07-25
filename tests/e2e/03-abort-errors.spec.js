@@ -156,7 +156,8 @@ test.describe("stopping and error paths", () => {
     await expect(page.locator("#statusLine")).toContainText("4 sentences");
     const duration = await page.evaluate(() => document.querySelector("audio").duration);
     expect(Math.abs(duration - 4 * 0.4)).toBeLessThan(0.1);
-    const streams = await page.evaluate(() => window.__TTS_STREAMS);
-    expect(streams).toBe(2);
+    // per-unit synthesis: 2 sentences in the first read + 4 in the second
+    const calls = await page.evaluate(() => window.__TTS_GEN || 0);
+    expect(calls).toBe(6);
   });
 });

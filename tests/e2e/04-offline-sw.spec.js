@@ -79,11 +79,14 @@ test.describe("service worker and offline", () => {
     await warmUp(page);
     // a top-level navigation to an in-scope asset must not be cached AS the app shell
     await page.goto("/icon-180.png");
-    await page.goto("/#paste");
 
+    // go offline BEFORE navigating back to the app: online navigations are
+    // network-first and would re-put the real index.html, healing the poison
+    // and making this regression test vacuous
     await setAppOffline(true);
     await setCdnOffline(true);
-    await page.reload();
+
+    await page.goto("/#paste");
     await expect(page.locator("#readBtn")).toBeVisible(); // the app, not PNG bytes
   });
 
