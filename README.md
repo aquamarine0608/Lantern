@@ -2,7 +2,7 @@
 
 A single-page web app that reads any pasted text aloud using Kokoro-82M, running entirely on your device via WebAssembly. After the first run, it works fully offline — airplane mode included.
 
-**Files:** `index.html` · `sw.js` · `manifest.webmanifest` · `icon-180.png` · `icon-512.png`
+**Files:** `index.html` · `sw.js` · `manifest.webmanifest` · `icon-180.png` · `icon-512.png` (the `tests/` folder is a dev-only end-to-end suite — deploying it does no harm, but it isn't needed)
 
 ## Get it on your iPhone (~3 minutes)
 
@@ -37,4 +37,18 @@ Open http://localhost:8000. Note: viewing it from your phone over LAN (`http://<
 
 - Voices are the top-graded Kokoro voices; `af_heart` ("Heart") is the best. Full list: hexgrad/Kokoro-82M on Hugging Face — add more `<option>`s in `index.html` if you want them.
 - Model: `onnx-community/Kokoro-82M-v1.0-ONNX`, 8-bit quantized, WASM backend — the reliable path on iOS Safari. English only (Kokoro's CJK support needs a different phonemizer pipeline and isn't in the web build).
-- To update the app after editing files, bump `SHELL` in `sw.js` (e.g. `v1` → `v2`) so installed phones pick up the change.
+- Updates: `index.html` changes are picked up automatically on the next online visit (the service worker fetches page navigations network-first). When you change the icons, the manifest, or the pinned kokoro-js version, bump `VERSION` in `sw.js` (e.g. `v2` → `v3`) so installed phones refresh those too.
+- Very long texts (a whole book) will eventually hit device memory limits: the full audio is kept in RAM so Save WAV can export it. Chapter-sized pastes are the sweet spot.
+
+## Testing
+
+`tests/` holds a Playwright end-to-end suite that drives the real app in Chromium against a mocked Kokoro engine (no 90 MB download): generation, live playback, the file-mode player, stopping, every error path, refresh persistence, and true offline service-worker behavior (both local test servers can drop their sockets to simulate airplane mode).
+
+```
+cd tests
+npm install
+npx playwright install chromium   # once, unless a pre-installed browser is available
+npm test
+```
+
+Note: the suite binds local port 443 to impersonate `cdn.jsdelivr.net` (that's how service-worker fetches get mocked too), so it needs an environment that allows that — macOS allows it by default, on Linux use root/CAP_NET_BIND_SERVICE.
