@@ -1,6 +1,6 @@
 const { test, expect, startRead, waitForFileMode } = require("../helpers/fixtures");
 const { importEpub } = require("../helpers/epub");
-const { setQwenOffline, getQwenRequests } = require("../helpers/net");
+const { setQwenOffline, setQwenHang, getQwenRequests } = require("../helpers/net");
 
 const QWEN_URL = "http://127.0.0.1:4174";
 
@@ -21,6 +21,37 @@ const speakingSi = async (page) => {
 test.describe("Qwen3-TTS server engine", () => {
   test.afterEach(async () => {
     await setQwenOffline(false);
+    await setQwenHang(false);
+  });
+
+  test("Stop cancels instantly even when the server hangs mid-request", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await enableQwen(page);
+    await setQwenHang(true);
+
+    await page.click("#pasteModeBtn");
+    await startRead(page);
+    await expect(page.locator("#readBtn")).toHaveText("Stop reading");
+    await page.waitForTimeout(800); // the request is now parked on a server that will never answer
+    await page.click("#readBtn"); // Stop must abort the in-flight fetch, not wait 30 s for it
+    await expect(page.locator("#readBtn")).toHaveText("Read aloud", { timeout: 5000 });
+    await expect(page.locator("#player")).toBeHidden();
+    await expect(page.locator("#banner")).toBeHidden(); // an intentional stop is not an error
+  });
+
+  test("jumping in the reader is never blocked by a hung request", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await enableQwen(page);
+    await importEpub(page);
+    await page.click(".book");
+    await setQwenHang(true);
+    await page.click("#rPlay"); // this pump parks on a request that will never answer
+    await page.waitForTimeout(800);
+    await setQwenHang(false);
+    await page.click('.sent[data-si="2"]'); // must abort the hung pump and start fresh
+    await expect.poll(() => speakingSi(page), { timeout: 10_000 }).toBe(2);
   });
 
   test("pasted text reads through the server — no on-device model involved", async ({ page, mockTTS }) => {

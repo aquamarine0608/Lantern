@@ -24,6 +24,15 @@ const setAppOffline = (offline) => controlRequest(false, APP_PORT, "127.0.0.1", 
 const setCdnOffline = (offline) => controlRequest(true, CDN_PORT, "cdn.jsdelivr.net", offline);
 const setQwenOffline = (offline) => controlRequest(false, QWEN_PORT, "127.0.0.1", offline);
 
+function setQwenHang(hang) {
+  return new Promise((resolve, reject) => {
+    http.get({ host: "127.0.0.1", port: QWEN_PORT, path: `/__control?hang=${hang ? 1 : 0}` }, (res) => {
+      res.resume();
+      res.on("end", resolve);
+    }).on("error", reject);
+  });
+}
+
 function getQwenRequests() {
   return new Promise((resolve, reject) => {
     http.get({ host: "127.0.0.1", port: QWEN_PORT, path: "/__requests" }, (res) => {
@@ -34,4 +43,4 @@ function getQwenRequests() {
   });
 }
 
-module.exports = { setAppOffline, setCdnOffline, setQwenOffline, getQwenRequests };
+module.exports = { setAppOffline, setCdnOffline, setQwenOffline, setQwenHang, getQwenRequests };

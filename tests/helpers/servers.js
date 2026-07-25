@@ -137,7 +137,14 @@ function startQwenServer(state) {
       res.end(JSON.stringify(state.qwenRequests));
       return;
     }
-    if (handleControl(state, "qwenOffline", req, res)) return;
+    const ctlUrl = new URL(req.url, "http://x");
+    if (ctlUrl.pathname === "/__control") {
+      if (ctlUrl.searchParams.has("offline")) state.qwenOffline = ctlUrl.searchParams.get("offline") === "1";
+      if (ctlUrl.searchParams.has("hang")) state.qwenHang = ctlUrl.searchParams.get("hang") === "1";
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ qwenOffline: state.qwenOffline, qwenHang: state.qwenHang }));
+      return;
+    }
     if (state.qwenOffline) {
       req.socket.destroy();
       return;
@@ -154,6 +161,7 @@ function startQwenServer(state) {
         let payload = {};
         try { payload = JSON.parse(body); } catch {}
         state.qwenRequests.push(payload);
+        if (state.qwenHang) return; /* accept the request, never answer — a black-holed server */
         const rate = 22050;
         const n = Math.round((rate * 0.5) / (payload.speed || 1));
         const buf = Buffer.alloc(44 + n * 2);

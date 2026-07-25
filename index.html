@@ -380,6 +380,7 @@ let sources = [], chunks = [], envelope = [];
 let t0 = 0, scheduleT = 0, totalDur = 0, sentDone = 0, sentTotal = 1;
 let aborted = false, wavURL = null, rafId = 0;
 let qrToken = 0; /* session fence: an orphaned generation must never touch a newer session's state */
+let qrAbort = null; /* cancels in-flight server synthesis for the paste session */
 
 /* ---------------- small helpers ---------------- */
 const fmt = s => { s = Math.max(0, Math.floor(s)); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
@@ -486,6 +487,7 @@ function wavToFloat32(buf, targetRate) {
     off += 8 + size + (size & 1);
   }
   if (!fmt || dataOff < 0 || !fmt.rate) throw new Error("malformed WAV");
+  if (fmt.rate < 4000 || fmt.rate > 192000) throw new Error("implausible WAV sample rate"); /* also bounds the resampler allocation */
   dataLen = Math.min(dataLen, buf.byteLength - dataOff);
   const ch = fmt.channels;
   let samples;
@@ -508,28 +510,39 @@ function wavToFloat32(buf, targetRate) {
   return out;
 }
 
-async function qwenSynthesize(text) {
+async function qwenSynthesize(text, signal) {
   if (!qwenServer) throw new Error("no Qwen3-TTS server configured");
-  const res = await fetch(qwenServer.replace(/\/+$/, "") + "/v1/audio/speech", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: "qwen3-tts", input: text, voice: qwenVoiceName || "cherry", speed, response_format: "wav" }),
-  });
-  if (!res.ok) throw new Error("TTS server responded " + res.status);
-  return wavToFloat32(await res.arrayBuffer(), SR);
+  /* a black-holed server must never hang a pump: hard timeout + caller abort */
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(new Error("TTS server timed out")), 30000);
+  const onOuter = () => ctl.abort(new Error("cancelled"));
+  if (signal) { if (signal.aborted) onOuter(); else signal.addEventListener("abort", onOuter, { once: true }); }
+  try {
+    const res = await fetch(qwenServer.replace(/\/+$/, "") + "/v1/audio/speech", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "qwen3-tts", input: text, voice: qwenVoiceName || "cherry", speed, response_format: "wav" }),
+      signal: ctl.signal,
+    });
+    if (!res.ok) throw new Error("TTS server responded " + res.status);
+    return wavToFloat32(await res.arrayBuffer(), SR);
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener("abort", onOuter);
+  }
 }
 
 /* one call = one sentence of mono 24 kHz audio, whatever the engine */
-async function synthesizeSentence(text) {
-  if (engine === "qwen") return qwenSynthesize(text);
+async function synthesizeSentence(text, signal) {
+  if (engine === "qwen") return qwenSynthesize(text, signal);
   const out = await tts.generate(text, { voice: voiceSel.value, speed });
   return out.audio;
 }
 
 /* sentence-audio source for the paste view: kokoro streams, qwen goes sentence by sentence */
-async function* sentenceAudioStream(text) {
+async function* sentenceAudioStream(text, signal) {
   if (engine === "qwen") {
-    for (const s of splitSentences(text)) yield await qwenSynthesize(s);
+    for (const s of splitSentences(text)) yield await qwenSynthesize(s, signal);
   } else {
     const splitter = new TextSplitterStream();
     const stream = tts.stream(splitter, { voice: voiceSel.value, speed });
@@ -747,6 +760,7 @@ readBtn.addEventListener("click", async () => {
     aborted = true;
     statusLine.textContent = "Stopping…";
     if (ctx) { try { ctx.suspend(); } catch {} } /* silence right away; the loop exits at the next chunk */
+    if (qrAbort) qrAbort.abort(); /* and cancel any in-flight server request immediately */
     return;
   }
   const text = textEl.value.trim();
@@ -755,6 +769,8 @@ readBtn.addEventListener("click", async () => {
   if (!banner.hidden && banner.classList.contains("error")) hideBanner(); /* stale error from a previous attempt */
   resetSession();
   const myToken = ++qrToken;
+  qrAbort = new AbortController();
+  const mySignal = qrAbort.signal;
   mode = "generating";
   readBtn.textContent = "Stop reading";
   readBtn.classList.add("stopping", "working");
@@ -802,7 +818,7 @@ readBtn.addEventListener("click", async () => {
 
   let streamFailed = false;
   try {
-    for await (const f32 of sentenceAudioStream(text)) {
+    for await (const f32 of sentenceAudioStream(text, mySignal)) {
       if (myToken !== qrToken) return; /* a newer session owns ctx/chunks — do not interleave into it */
       if (aborted) break;
       if (!f32 || !f32.length) continue; /* a sentence can synthesize to nothing — skip it, createBuffer(1, 0) would throw */
@@ -820,9 +836,12 @@ readBtn.addEventListener("click", async () => {
       statusLine.textContent = `Reading aloud — sentence ${sentDone} of ~${Math.max(sentTotal, sentDone)} · ${genLabel()}`;
     }
   } catch (err) {
-    console.error(err);
-    streamFailed = true;
-    showBanner(`<b>Something went wrong while generating.</b> Try again with a shorter text, or reload the page.`, { error: true });
+    if (aborted || myToken !== qrToken) { /* an intentional cancel is not an error */ }
+    else {
+      console.error(err);
+      streamFailed = true;
+      showBanner(`<b>Something went wrong while generating.</b> Try again with a shorter text, or reload the page.`, { error: true });
+    }
   }
 
   /* the session may have been torn down externally (view switch) — don't touch shared state */
@@ -860,6 +879,7 @@ document.addEventListener("visibilitychange", () => { if (mode === "file" && aud
 function stopQuickRead() {
   if (mode === "idle") return;
   qrToken++; /* fence out the in-flight session before touching anything */
+  if (qrAbort) qrAbort.abort();
   resetSession();
   aborted = true; /* AFTER resetSession — it resets the flag, which would leave the stream running */
   mode = "idle";
@@ -1169,6 +1189,7 @@ function setReaderIcon(state) { /* "play" | "pause" | "busy" */
 
 function readerStopPlayback() {
   rd.token++;
+  if (rd.abortCtl) { rd.abortCtl.abort(); rd.abortCtl = null; } /* cancel any in-flight server request */
   for (const s of rd.sources) { try { s.onended = null; s.stop(); } catch {} }
   rd.sources = []; rd.timings = []; rd.genDone = false; rd.hl = -1;
 }
@@ -1320,6 +1341,8 @@ async function readerPlayFrom(si) {
   stopQuickRead();
   readerStopPlayback();
   const myToken = rd.token;
+  const myAbort = new AbortController();
+  rd.abortCtl = myAbort;
   rd.playing = true; rd.started = true;
   setReaderIcon("busy");
   /* serialize pumps: an abandoned pump may still have one tts.generate in flight —
@@ -1354,8 +1377,9 @@ async function readerPlayFrom(si) {
     const key = `${engine}:${engine === "qwen" ? qwenVoiceName : voiceSel.value}:${speed}:${chAtStart}:${i}`;
     let f32 = rd.cache.get(key);
     if (f32 === undefined) {
-      try { f32 = await synthesizeSentence(rd.sentences[i]); }
+      try { f32 = await synthesizeSentence(rd.sentences[i], myAbort.signal); }
       catch (err) {
+        if (myToken !== rd.token) return; /* cancelled by a jump/teardown — not an error */
         console.error(err);
         genFailed = true;
         if (myToken === rd.token) {
@@ -1539,7 +1563,10 @@ engineBtns.addEventListener("click", ev => {
   if (b) setEngine(b.dataset.e);
 });
 qwenUrl.addEventListener("change", () => {
-  qwenServer = qwenUrl.value.trim();
+  let v = qwenUrl.value.trim();
+  if (v && !/^https?:\/\//i.test(v)) v = "https://" + v.replace(/^[a-z]+:\/\//i, ""); /* only http(s) makes sense here */
+  qwenServer = v;
+  qwenUrl.value = v;
   try { localStorage.setItem("lantern.qwenUrl", qwenServer); } catch {}
   applyEngineUI();
   readerSettingsChanged();
