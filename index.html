@@ -130,7 +130,7 @@
   .back-row { align-self: flex-start; border: 0; color: var(--mist); padding: 2px 4px; }
 
   /* ---------- library ---------- */
-  .lib-actions { display: flex; gap: 10px; }
+  .lib-actions { display: flex; gap: 10px; flex-wrap: wrap; }
   .lib-actions .primary { flex: 1; width: auto; }
   .shelf { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
   .book { background: var(--page); border: 1px solid var(--line); border-radius: 14px; padding: 10px; cursor: pointer; display: flex; flex-direction: column; gap: 7px; }
@@ -176,6 +176,10 @@
   .fontsize { display: flex; align-items: center; gap: 10px; }
   .fontsize button { background: var(--ink); border: 1px solid var(--line); color: var(--chalk); border-radius: 10px; padding: 8px 14px; font-size: 14px; cursor: pointer; }
   .fontsize span { font-family: var(--mono); font-size: 13px; color: var(--chalk); min-width: 2ch; text-align: center; }
+  .cfg-input { flex: 1; max-width: 300px; background: var(--ink); border: 1px solid var(--line); border-radius: 10px; color: var(--chalk); font-family: var(--mono); font-size: 13px; padding: 10px 12px; outline: none; }
+  .cfg-input:focus { border-color: var(--lamp); }
+  .sheet .hint { margin: 6px 0 2px; line-height: 1.55; }
+  .mono { font-family: var(--mono); font-size: .92em; }
 
   [hidden] { display: none !important; }
 </style>
@@ -193,6 +197,7 @@
     <div class="lib-actions">
       <button class="primary" id="addBookBtn">Add a book · EPUB</button>
       <button class="ghost-btn" id="pasteModeBtn">Read pasted text</button>
+      <button class="ghost-btn" id="libVoiceBtn">Voice</button>
       <input type="file" id="bookFile" accept=".epub,application/epub+zip" hidden>
     </div>
     <div class="shelf" id="shelf"></div>
@@ -280,26 +285,40 @@
       </div>
     </div>
 
-    <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
-    <div class="sheet" id="tocSheet" hidden>
-      <div class="sheet-title">Chapters</div>
-      <div class="toc-list" id="tocList"></div>
+  </section>
+
+  <!-- ---------- bottom sheets (shared by reader + library) ---------- -->
+  <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+  <div class="sheet" id="tocSheet" hidden>
+    <div class="sheet-title">Chapters</div>
+    <div class="toc-list" id="tocList"></div>
+  </div>
+  <div class="sheet" id="setSheet" hidden>
+    <div class="sheet-title">Reading settings</div>
+    <div class="set-row"><span>Text size</span>
+      <div class="fontsize"><button id="fontMinus" aria-label="Smaller text">A−</button><span id="fontVal"></span><button id="fontPlus" aria-label="Larger text">A+</button></div>
     </div>
-    <div class="sheet" id="setSheet" hidden>
-      <div class="sheet-title">Reading settings</div>
-      <div class="set-row"><span>Text size</span>
-        <div class="fontsize"><button id="fontMinus" aria-label="Smaller text">A−</button><span id="fontVal"></span><button id="fontPlus" aria-label="Larger text">A+</button></div>
+    <div class="set-row"><span>Engine</span>
+      <div class="speeds" id="engineBtns">
+        <button data-e="kokoro" class="on">On-device</button><button data-e="qwen">Qwen3-TTS</button>
       </div>
+    </div>
+    <div id="kokoroCfg">
       <div class="set-row"><span>Voice</span>
         <div class="voice-wrap"><select id="rVoice" aria-label="Voice"></select></div>
       </div>
-      <div class="set-row"><span>Speed</span>
-        <div class="speeds" id="rSpeeds">
-          <button data-s="0.8">0.8×</button><button data-s="1" class="on">1×</button><button data-s="1.2">1.2×</button><button data-s="1.5">1.5×</button>
-        </div>
+    </div>
+    <div id="qwenCfg" hidden>
+      <div class="set-row"><span>Server</span><input id="qwenUrl" class="cfg-input" type="url" placeholder="https://your-pc.tail1234.ts.net" spellcheck="false"></div>
+      <div class="set-row"><span>Voice</span><input id="qwenVoice" class="cfg-input" placeholder="cherry" spellcheck="false"></div>
+      <p class="hint">Qwen3-TTS needs a GPU, so it runs on a computer you own and Lantern streams the voice from it (an OpenAI-compatible <span class="mono">/v1/audio/speech</span> server, reachable over HTTPS with CORS enabled). On-device reading keeps working offline either way.</p>
+    </div>
+    <div class="set-row"><span>Speed</span>
+      <div class="speeds" id="rSpeeds">
+        <button data-s="0.8">0.8×</button><button data-s="1" class="on">1×</button><button data-s="1.2">1.2×</button><button data-s="1.5">1.5×</button>
       </div>
     </div>
-  </section>
+  </div>
 
   <div class="banner" id="banner" hidden>
     <span id="bannerText"></span>
@@ -332,16 +351,22 @@ const textEl = $("text"), countEl = $("count"), readBtn = $("readBtn"),
       rIconPlay = $("rIconPlay"), rIconPause = $("rIconPause"),
       sheetBackdrop = $("sheetBackdrop"), tocSheet = $("tocSheet"), setSheet = $("setSheet"), tocList = $("tocList"),
       fontMinus = $("fontMinus"), fontPlus = $("fontPlus"), fontVal = $("fontVal"),
-      rVoice = $("rVoice"), rSpeeds = $("rSpeeds");
+      rVoice = $("rVoice"), rSpeeds = $("rSpeeds"),
+      engineBtns = $("engineBtns"), kokoroCfg = $("kokoroCfg"), qwenCfg = $("qwenCfg"),
+      qwenUrl = $("qwenUrl"), qwenVoice = $("qwenVoice"), libVoiceBtn = $("libVoiceBtn");
 
 /* ---------------- persisted prefs ---------------- */
 let speed = 1;
+let engine = "kokoro", qwenServer = "", qwenVoiceName = "cherry";
 try {
   const t = localStorage.getItem("lantern.text");   if (t) textEl.value = t;
   const v = localStorage.getItem("lantern.voice");
   if (v && [...voiceSel.options].some(o => o.value === v)) voiceSel.value = v;
   const s = parseFloat(localStorage.getItem("lantern.speed"));
   if ([...speedsEl.children].some(b => parseFloat(b.dataset.s) === s)) speed = s;
+  if (localStorage.getItem("lantern.engine") === "qwen") engine = "qwen";
+  qwenServer = localStorage.getItem("lantern.qwenUrl") || "";
+  qwenVoiceName = localStorage.getItem("lantern.qwenVoice") || "cherry";
 } catch {}
 for (const b of speedsEl.children) b.classList.toggle("on", parseFloat(b.dataset.s) === speed);
 
@@ -441,8 +466,91 @@ function loadModel() {
   return modelLoading;
 }
 /* once the model has been downloaded on this device, warm it up right away
-   so reading starts instantly after a refresh */
-try { if (localStorage.getItem("lantern.modelReady") === "1") loadModel().catch(() => {}); } catch {}
+   so reading starts instantly after a refresh (pointless when a server voice is active) */
+try { if (engine === "kokoro" && localStorage.getItem("lantern.modelReady") === "1") loadModel().catch(() => {}); } catch {}
+
+/* ================================================================
+   voice engines — Kokoro on-device, or Qwen3-TTS streamed from the
+   user's own server (OpenAI-compatible /v1/audio/speech)
+   ================================================================ */
+
+/* parse a RIFF/WAVE response (PCM16 or float32, any rate/channels) into mono Float32 at targetRate */
+function wavToFloat32(buf, targetRate) {
+  const v = new DataView(buf);
+  if (buf.byteLength < 44 || v.getUint32(0) !== 0x52494646 || v.getUint32(8) !== 0x57415645) throw new Error("not a WAV response");
+  let off = 12, fmt = null, dataOff = -1, dataLen = 0;
+  while (off + 8 <= buf.byteLength) {
+    const id = v.getUint32(off), size = v.getUint32(off + 4, true);
+    if (id === 0x666D7420) fmt = { codec: v.getUint16(off + 8, true), channels: v.getUint16(off + 10, true) || 1, rate: v.getUint32(off + 12, true), bits: v.getUint16(off + 22, true) };
+    else if (id === 0x64617461) { dataOff = off + 8; dataLen = size; }
+    off += 8 + size + (size & 1);
+  }
+  if (!fmt || dataOff < 0 || !fmt.rate) throw new Error("malformed WAV");
+  dataLen = Math.min(dataLen, buf.byteLength - dataOff);
+  const ch = fmt.channels;
+  let samples;
+  if (fmt.codec === 1 && fmt.bits === 16) {
+    const n = Math.floor(dataLen / 2 / ch);
+    samples = new Float32Array(n);
+    for (let i = 0; i < n; i++) { let s = 0; for (let c = 0; c < ch; c++) s += v.getInt16(dataOff + (i * ch + c) * 2, true); samples[i] = s / ch / 32768; }
+  } else if (fmt.codec === 3 && fmt.bits === 32) {
+    const n = Math.floor(dataLen / 4 / ch);
+    samples = new Float32Array(n);
+    for (let i = 0; i < n; i++) { let s = 0; for (let c = 0; c < ch; c++) s += v.getFloat32(dataOff + (i * ch + c) * 4, true); samples[i] = s / ch; }
+  } else throw new Error("unsupported WAV encoding");
+  if (fmt.rate === targetRate || samples.length < 2) return samples;
+  const out = new Float32Array(Math.max(1, Math.round(samples.length * targetRate / fmt.rate)));
+  const step = (samples.length - 1) / Math.max(1, out.length - 1);
+  for (let i = 0; i < out.length; i++) {
+    const x = i * step, i0 = Math.floor(x), i1 = Math.min(samples.length - 1, i0 + 1), f = x - i0;
+    out[i] = samples[i0] * (1 - f) + samples[i1] * f;
+  }
+  return out;
+}
+
+async function qwenSynthesize(text) {
+  if (!qwenServer) throw new Error("no Qwen3-TTS server configured");
+  const res = await fetch(qwenServer.replace(/\/+$/, "") + "/v1/audio/speech", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "qwen3-tts", input: text, voice: qwenVoiceName || "cherry", speed, response_format: "wav" }),
+  });
+  if (!res.ok) throw new Error("TTS server responded " + res.status);
+  return wavToFloat32(await res.arrayBuffer(), SR);
+}
+
+/* one call = one sentence of mono 24 kHz audio, whatever the engine */
+async function synthesizeSentence(text) {
+  if (engine === "qwen") return qwenSynthesize(text);
+  const out = await tts.generate(text, { voice: voiceSel.value, speed });
+  return out.audio;
+}
+
+/* sentence-audio source for the paste view: kokoro streams, qwen goes sentence by sentence */
+async function* sentenceAudioStream(text) {
+  if (engine === "qwen") {
+    for (const s of splitSentences(text)) yield await qwenSynthesize(s);
+  } else {
+    const splitter = new TextSplitterStream();
+    const stream = tts.stream(splitter, { voice: voiceSel.value, speed });
+    splitter.push(text); splitter.close();
+    for await (const { audio } of stream) yield audio.audio;
+  }
+}
+
+async function ensureEngineReady() {
+  if (engine === "qwen") {
+    if (!qwenServer) {
+      showBanner(`<b>Set your Qwen3-TTS server first.</b> Open the reading settings (Aa) and enter the server address.`, { error: true });
+      throw new Error("no server");
+    }
+    setModelState("ready", "qwen3-tts · server voice");
+    return;
+  }
+  await loadModel();
+}
+
+const genLabel = () => engine === "qwen" ? "streaming from your Qwen3-TTS server" : "generating on-device";
 
 /* ---------------- waveform ---------------- */
 const dpr = Math.min(window.devicePixelRatio || 1, 3);
@@ -673,7 +781,7 @@ readBtn.addEventListener("click", async () => {
   audioEl.play().catch(() => {});
   setMediaSession(true);
 
-  try { await loadModel(); }
+  try { await ensureEngineReady(); }
   catch {
     if (myToken !== qrToken) return; /* superseded — a newer session owns the shared state now */
     readBtn.textContent = "Read aloud"; readBtn.classList.remove("stopping", "working");
@@ -692,16 +800,11 @@ readBtn.addEventListener("click", async () => {
   t0 = 0; scheduleT = 0; totalDur = 0;
   cancelAnimationFrame(rafId); tick();
 
-  const splitter = new TextSplitterStream();
-  const stream = tts.stream(splitter, { voice: voiceSel.value, speed });
-  splitter.push(text); splitter.close();
-
   let streamFailed = false;
   try {
-    for await (const { audio } of stream) {
+    for await (const f32 of sentenceAudioStream(text)) {
       if (myToken !== qrToken) return; /* a newer session owns ctx/chunks — do not interleave into it */
       if (aborted) break;
-      const f32 = audio.audio;
       if (!f32 || !f32.length) continue; /* a sentence can synthesize to nothing — skip it, createBuffer(1, 0) would throw */
       chunks.push(f32); pushEnvelope(f32);
       const buf = ctx.createBuffer(1, f32.length, SR);
@@ -714,7 +817,7 @@ readBtn.addEventListener("click", async () => {
       totalDur = scheduleT - t0;
       sources.push(src);
       sentDone++;
-      statusLine.textContent = `Reading aloud — sentence ${sentDone} of ~${Math.max(sentTotal, sentDone)} · generating on-device`;
+      statusLine.textContent = `Reading aloud — sentence ${sentDone} of ~${Math.max(sentTotal, sentDone)} · ${genLabel()}`;
     }
   } catch (err) {
     console.error(err);
@@ -1100,7 +1203,7 @@ function updateReaderStatus(extra) {
   const parts = [`Chapter ${rd.ch + 1} of ${rd.book.chapters.length}`];
   if (rd.sentences.length) parts.push(`sentence ${Math.min(rd.si + 1, rd.sentences.length)} of ${rd.sentences.length}`);
   if (extra) parts.push(extra);
-  else if (rd.started && !rd.genDone) parts.push("generating on-device");
+  else if (rd.started && !rd.genDone) parts.push(genLabel());
   rStatus.textContent = parts.join(" · ");
 }
 
@@ -1227,7 +1330,7 @@ async function readerPlayFrom(si) {
   if (myToken !== rd.token) return;
   await ensureReaderAudio();
   if (myToken !== rd.token) return;
-  try { await loadModel(); }
+  try { await ensureEngineReady(); }
   catch { if (myToken === rd.token) { rd.playing = false; rd.started = false; setReaderIcon("play"); } return; }
   if (myToken !== rd.token) return;
 
@@ -1248,11 +1351,10 @@ async function readerPlayFrom(si) {
       await new Promise(r => setTimeout(r, 250));
       if (myToken !== rd.token) return;
     }
-    const key = `${chAtStart}:${i}:${voiceSel.value}:${speed}`;
+    const key = `${engine}:${engine === "qwen" ? qwenVoiceName : voiceSel.value}:${speed}:${chAtStart}:${i}`;
     let f32 = rd.cache.get(key);
     if (f32 === undefined) {
-      let out;
-      try { out = await tts.generate(rd.sentences[i], { voice: voiceSel.value, speed }); }
+      try { f32 = await synthesizeSentence(rd.sentences[i]); }
       catch (err) {
         console.error(err);
         genFailed = true;
@@ -1262,7 +1364,6 @@ async function readerPlayFrom(si) {
         }
         break;
       }
-      f32 = out.audio;
       rd.cache.set(key, f32);
       /* bounded cache: recent sentences only — enough for instant back-skips */
       if (rd.cache.size > 48) rd.cache.delete(rd.cache.keys().next().value);
@@ -1416,6 +1517,43 @@ rVoice.innerHTML = voiceSel.innerHTML;
 rVoice.value = voiceSel.value;
 for (const c of rSpeeds.children) c.classList.toggle("on", parseFloat(c.dataset.s) === speed);
 
+/* ---------------- voice engine settings ---------------- */
+function applyEngineUI() {
+  for (const b of engineBtns.children) b.classList.toggle("on", b.dataset.e === engine);
+  kokoroCfg.hidden = engine !== "kokoro";
+  qwenCfg.hidden = engine !== "qwen";
+  if (engine === "qwen") setModelState(qwenServer ? "ready" : "", qwenServer ? "qwen3-tts · server voice" : "qwen3-tts · set server address");
+  else if (tts) setModelState("ready", "voice model ready");
+  else if (modelLoading) setModelState("busy", "downloading voice model");
+  else setModelState("", "voice model not loaded");
+}
+function setEngine(e) {
+  if (engine === e) return;
+  engine = e;
+  try { localStorage.setItem("lantern.engine", e); } catch {}
+  applyEngineUI();
+  readerSettingsChanged();
+}
+engineBtns.addEventListener("click", ev => {
+  const b = ev.target.closest("button");
+  if (b) setEngine(b.dataset.e);
+});
+qwenUrl.addEventListener("change", () => {
+  qwenServer = qwenUrl.value.trim();
+  try { localStorage.setItem("lantern.qwenUrl", qwenServer); } catch {}
+  applyEngineUI();
+  readerSettingsChanged();
+});
+qwenVoice.addEventListener("change", () => {
+  qwenVoiceName = qwenVoice.value.trim() || "cherry";
+  try { localStorage.setItem("lantern.qwenVoice", qwenVoiceName); } catch {}
+  readerSettingsChanged();
+});
+qwenUrl.value = qwenServer;
+qwenVoice.value = qwenVoiceName;
+applyEngineUI();
+libVoiceBtn.addEventListener("click", () => openSheet(setSheet));
+
 /* ---------------- open a book ---------------- */
 async function openReader(id) {
   const wantHash = location.hash;
@@ -1453,6 +1591,7 @@ function showView(name) {
   if (activeView === "reader" && name !== "reader") readerTeardown();
   if (activeView === "paste" && name !== "paste") stopQuickRead();
   activeView = name;
+  closeSheets(); /* sheets are shared between views — never leave one floating across a switch */
   viewLibrary.classList.toggle("active", name === "library");
   viewPaste.classList.toggle("active", name === "paste");
   viewReader.classList.toggle("active", name === "reader");

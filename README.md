@@ -10,7 +10,19 @@ A single-page web app that turns DRM-free **EPUBs** — and any pasted text — 
 - **Reader** — the chapter is laid out for reading; tap any sentence and Lantern starts reading aloud from exactly there. The current sentence stays highlighted and the page follows the voice. Skip back/forward a sentence, jump chapters from the table of contents, adjust the text size.
 - **Keeps your place** — the reading position is saved continuously and restored after refreshes, relaunches, and reboots. Chapters advance automatically; lock-screen controls work.
 - **Paste mode** — the original paste-any-text flow is still there (Library → "Read pasted text"), including **Save WAV** export.
-- Nine hand-picked Kokoro voices (American & British), speeds from 0.8× to 1.5×.
+- **Two voice engines** — the on-device Kokoro voice (default, fully offline), or **Qwen3-TTS** streamed from a server you own. Nine hand-picked Kokoro voices (American & British), speeds from 0.8× to 1.5×.
+
+## Voice engines
+
+**On-device (default).** Kokoro-82M runs inside the browser via WebAssembly. Private, offline after the first model download, works everywhere.
+
+**Qwen3-TTS (your server).** [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) (Apache-2.0, 0.6B/1.7B) is a much bigger, LM-based voice that **requires a CUDA GPU — it cannot run inside a phone browser** (no browser/ONNX-web runtime exists as of mid-2026). Lantern therefore streams it sentence-by-sentence from a computer you own:
+
+1. Run Qwen3-TTS behind any **OpenAI-compatible speech endpoint** (`POST /v1/audio/speech`, WAV output) — several community servers for it work out of the box.
+2. The endpoint must be reachable from the phone over **HTTPS** with **CORS enabled** (a page served over HTTPS cannot call plain-HTTP LAN addresses). The easiest route: `tailscale serve` or a Caddy/cloudflared tunnel in front of the server.
+3. In Lantern: **Voice** (library) or **Aa** (reader) → Engine → **Qwen3-TTS** → enter the server address and a voice name (e.g. `cherry`).
+
+Reading, highlighting, resume, and the player all work identically on either engine; the status chip shows which voice is active. On-device reading keeps working offline regardless — if the server is unreachable, Lantern says so and parks for a retry, and you can switch back to the on-device engine any time.
 
 ## Get it on your iPhone (~3 minutes)
 
@@ -51,7 +63,7 @@ Open http://localhost:8000. Note: viewing it from your phone over LAN (`http://<
 
 ## Testing
 
-`tests/` holds a Playwright end-to-end suite (47 tests) that drives the real app in Chromium against a mocked Kokoro engine and generated fixture EPUBs (no 90 MB download): library import/remove, the reader with sentence highlighting, tap-to-read, skips, chapter auto-advance, resume-after-reload, paste-mode generation and WAV export, every error path, refresh persistence, and true offline service-worker behavior (the local test servers can drop their sockets to simulate airplane mode).
+`tests/` holds a Playwright end-to-end suite (62 tests) that drives the real app in Chromium against a mocked Kokoro engine, a mock OpenAI-compatible Qwen3-TTS server, and generated fixture EPUBs (no model downloads): library import/remove, the reader with sentence highlighting, tap-to-read, skips, chapter auto-advance, resume-after-reload, both voice engines (including server failures and engine switching), paste-mode generation and WAV export, every error path, refresh persistence, and true offline service-worker behavior (the local test servers can drop their sockets to simulate airplane mode).
 
 ```
 cd tests

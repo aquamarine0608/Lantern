@@ -1,6 +1,6 @@
 const http = require("http");
 const https = require("https");
-const { APP_PORT, CDN_PORT } = require("./servers");
+const { APP_PORT, CDN_PORT, QWEN_PORT } = require("./servers");
 
 function controlRequest(useTls, port, hostHeader, offline) {
   const mod = useTls ? https : http;
@@ -22,5 +22,16 @@ function controlRequest(useTls, port, hostHeader, offline) {
 
 const setAppOffline = (offline) => controlRequest(false, APP_PORT, "127.0.0.1", offline);
 const setCdnOffline = (offline) => controlRequest(true, CDN_PORT, "cdn.jsdelivr.net", offline);
+const setQwenOffline = (offline) => controlRequest(false, QWEN_PORT, "127.0.0.1", offline);
 
-module.exports = { setAppOffline, setCdnOffline };
+function getQwenRequests() {
+  return new Promise((resolve, reject) => {
+    http.get({ host: "127.0.0.1", port: QWEN_PORT, path: "/__requests" }, (res) => {
+      let body = "";
+      res.on("data", (d) => (body += d));
+      res.on("end", () => resolve(JSON.parse(body)));
+    }).on("error", reject);
+  });
+}
+
+module.exports = { setAppOffline, setCdnOffline, setQwenOffline, getQwenRequests };
