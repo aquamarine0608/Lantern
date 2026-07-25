@@ -101,6 +101,23 @@ test.describe("basics and happy path", () => {
     await expect(page.locator("#iconPlay")).toBeVisible();
   });
 
+  test("a space-free CJK paste gets a bounded excerpt, not the whole text as its title", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/#paste");
+    const cjk = "夜が明けて空は青く光り始めた".repeat(40) + "。"; // 561 chars, no spaces anywhere
+    await startRead(page, cjk);
+    // split(/\s+/) yields ONE token for CJK, so a word cap alone would put all
+    // 561 characters into the now-reading line and the lock-screen title
+    const shown = await page.locator("#nowReading").textContent();
+    expect(shown.length).toBeLessThanOrEqual(65);
+    await expect
+      .poll(() => page.evaluate(() => (navigator.mediaSession.metadata?.title || "").length), { timeout: 10_000 })
+      .toBeGreaterThan(0);
+    const titleLen = await page.evaluate(() => (navigator.mediaSession.metadata?.title || "").length);
+    expect(titleLen).toBeLessThanOrEqual(65);
+    await waitForFileMode(page, 20_000);
+  });
+
   test("file mode: tapping the wave seeks", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 1.0 });
     await page.goto("/#paste");

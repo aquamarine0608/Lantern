@@ -142,8 +142,22 @@ test.describe("stopping and error paths", () => {
     expect(Math.abs(duration - 1.0)).toBeLessThan(0.1); // only the new text — nothing interleaved
   });
 
+  test("Save WAV is available the moment generation finishes, while audio is still playing", async ({ page, mockTTS }) => {
+    // fast generation, slow audio: 2 sentences generate in ~100 ms but play for 6 s
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 3.0 });
+    await page.goto("/#paste");
+    await startRead(page, "One. Two.");
+    await expect(page.locator("#statusLine")).toContainText("ready to save", { timeout: 10_000 });
+    await expect(page.locator("#saveBtn")).toBeEnabled(); // NOT gated on playback draining
+    await expect(page.locator("#readBtn")).toHaveText("Read aloud");
+    // and the normal hand-off to file mode still happens when playback ends
+    await waitForFileMode(page, 20_000);
+  });
+
   test("starting a new read from file mode resets the previous session cleanly", async ({ page, mockTTS }) => {
-    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    // chunkDelay 250 keeps the mid-generation window wide enough to observe the
+    // disabled save button (it now enables at done-live, not only in file mode)
+    await mockTTS({ loadDelay: 20, chunkDelay: 250, chunkSeconds: 0.4 });
     await page.goto("/#paste");
     await startRead(page, "First short reading. It has two sentences.");
     await waitForFileMode(page);

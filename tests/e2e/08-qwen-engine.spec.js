@@ -293,6 +293,35 @@ test.describe("Qwen3-TTS server engine", () => {
     await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(0);
   });
 
+  test("a server error banner dies when the engine or the view changes", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5 });
+    await page.goto("/");
+    await importEpub(page);
+    await page.click(".book");
+    await page.click("#fontBtn");
+    await page.click('#engineBtns button[data-e="qwen"]'); // no server URL entered
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click("#rPlay");
+    await expect(page.locator("#bannerText")).toContainText("Set your Qwen3-TTS server first");
+
+    // switching back to the on-device engine invalidates the error — the chip says
+    // "voice model ready" and the banner must not contradict it
+    await page.click("#fontBtn");
+    await page.click('#engineBtns button[data-e="kokoro"]');
+    await expect(page.locator("#banner")).toBeHidden();
+    await page.click(".sheet:not([hidden]) .sheet-done");
+
+    // raise it again, then leave the reader: it must not follow into the library
+    await page.click("#fontBtn");
+    await page.click('#engineBtns button[data-e="qwen"]');
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click("#rPlay");
+    await expect(page.locator("#bannerText")).toContainText("Set your Qwen3-TTS server first");
+    await page.click("#backBtn");
+    await expect(page.locator("#addBookBtn")).toBeVisible();
+    await expect(page.locator("#banner")).toBeHidden();
+  });
+
   test("typing in the server field never disturbs the chapter being read", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 1.5 });
     await page.goto("/");

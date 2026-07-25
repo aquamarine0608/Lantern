@@ -129,4 +129,33 @@ test.describe("library", () => {
     await expect(page.locator(".book")).toHaveCount(1);
     await expect(page.locator("#banner")).toBeHidden();
   });
+
+  test("a transient storage failure doesn't leave the storage-error message on a healthy shelf", async ({ page }) => {
+    // fail the FIRST indexedDB.open only — openDB() is deliberately retryable
+    await page.addInitScript(() => {
+      const orig = indexedDB.open.bind(indexedDB);
+      let failedOnce = false;
+      indexedDB.open = function (...args) {
+        if (!failedOnce) {
+          failedOnce = true;
+          const req = {};
+          setTimeout(() => {
+            req.error = new DOMException("simulated open failure", "UnknownError");
+            if (req.onerror) req.onerror(new Event("error"));
+          }, 0);
+          return req;
+        }
+        return orig(...args);
+      };
+    });
+    await page.goto("/");
+    await expect(page.locator("#libEmpty")).toContainText("Couldn't open Lantern's book storage");
+
+    // navigate away and back: the retry succeeds, and the empty shelf must show
+    // its real message again — not a stale "storage is broken"
+    await page.click("#pasteModeBtn");
+    await page.click("#pasteBackBtn");
+    await expect(page.locator("#libEmpty")).toContainText("Your shelf is empty");
+    await expect(page.locator("#libEmpty")).not.toContainText("Private browsing");
+  });
 });

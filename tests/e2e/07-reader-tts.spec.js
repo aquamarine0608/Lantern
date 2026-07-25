@@ -1,5 +1,5 @@
 const { test, expect, startRead } = require("../helpers/fixtures");
-const { importEpub } = require("../helpers/epub");
+const { importEpub, makeEpub } = require("../helpers/epub");
 const { setAppOffline, setCdnOffline } = require("../helpers/net");
 
 const speakingSi = async (page) => {
@@ -198,6 +198,43 @@ test.describe("reading books aloud", () => {
     // the orphan's cleanup must not have detached the reader's audio route
     expect(await page.evaluate(() => !!document.querySelector("audio").srcObject)).toBe(true);
     await expect(page.locator("#rIconPause")).toBeVisible();
+  });
+
+  test("an orphaned generation from one book can never inject its audio into another book", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 2500, chunkSeconds: 0.5 });
+    await page.goto("/");
+    await importEpub(page); // "The Test Book"
+    await page.setInputFiles("#bookFile", {
+      name: "bravo.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "Bravo Book", chapters: [{ title: "Bravo Chapter", paras: ["Bravo sentence one. Bravo sentence two."] }] }),
+    });
+    await expect(page.locator(".book")).toHaveCount(2);
+    await page.locator(".book", { hasText: "The Test Book" }).click();
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await page.click("#rPlay"); // kokoro generate() for its sentence 0 is now in flight for 2.5 s
+    await page.waitForTimeout(400);
+    await page.click("#backBtn"); // orphan it — generate() can't be aborted mid-flight
+    await page.locator(".book", { hasText: "Bravo Book" }).click();
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await page.evaluate(() => { window.__TTS_MOCK__.chunkDelay = 50; });
+    await page.waitForTimeout(2600); // the orphan resolves AFTER Bravo's fresh cache was cleared
+    await page.click("#rPlay");
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(0);
+    // Bravo's first sentence must have been synthesized for real: a cross-book cache
+    // hit would silently play the other book's audio and never call generate for it
+    const texts = await page.evaluate(() => window.__TTS_GEN_TEXTS || []);
+    expect(texts.some((t) => t.includes("Bravo Chapter"))).toBe(true);
+  });
+
+  test("while the engine warms up, the reader shows the busy pulse and an honest status", async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS, { loadDelay: 3000 });
+    await page.click("#rPlay");
+    // during the 3 s model load: pulsing button, truthful status — not "tap play to listen"
+    await expect(page.locator("#rPlay")).toHaveClass(/working/);
+    await expect(page.locator("#rStatus")).toContainText("generating on-device");
+    await expect(page.locator("#rStatus")).not.toContainText("tap play");
+    await expect.poll(() => speakingSi(page), { timeout: 20_000 }).toBeGreaterThanOrEqual(0);
+    await expect(page.locator("#rPlay")).not.toHaveClass(/working/);
   });
 
   test("books read aloud fully offline after one online visit", async ({ page, mockTTS }) => {

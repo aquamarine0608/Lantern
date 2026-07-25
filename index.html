@@ -26,9 +26,17 @@
     --serif: "Instrument Serif", Georgia, serif;
     --body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
     --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    /* the body already pads by the safe-area insets, so anything sized at a raw
+       100dvh inside it would double-count them and hang off the bottom of the
+       screen (visible only in the installed home-screen app, where the insets
+       are non-zero) */
+    --safe-vh: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { margin: 0; height: 100%; }
+  html { margin: 0; height: 100%; }
+  /* min-height, not height: when content legitimately overflows, the body must
+     grow so its bottom safe-area padding stays below the content */
+  body { margin: 0; min-height: 100%; }
   body {
     background: var(--ink);
     color: var(--chalk);
@@ -37,7 +45,7 @@
     line-height: 1.45;
     padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
-  .wrap { max-width: 640px; margin: 0 auto; padding: 14px 16px 28px; display: flex; flex-direction: column; gap: 14px; min-height: 100dvh; }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 14px 16px 28px; display: flex; flex-direction: column; gap: 14px; min-height: var(--safe-vh); }
 
   /* ---------- header ---------- */
   header { display: flex; align-items: baseline; justify-content: space-between; padding: 6px 2px 0; }
@@ -154,7 +162,7 @@
   .lib-empty { color: var(--mist); font-size: 14px; text-align: center; padding: 34px 12px; line-height: 1.6; }
 
   /* ---------- reader ---------- */
-  body.reading .wrap { height: 100dvh; }
+  body.reading .wrap { height: var(--safe-vh); }
   body.reading #appHeader, body.reading footer { display: none; }
   #viewReader.active { gap: 10px; position: relative; }
   .r-top { display: flex; align-items: center; gap: 8px; padding-top: 6px; }
@@ -458,6 +466,19 @@ let qrWarmToken = 0; /* equals qrToken while that session is parked on ensureEng
 /* ---------------- small helpers ---------------- */
 const fmt = s => { s = Math.max(0, Math.floor(s)); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
 const words = t => (t.trim().match(/\S+/g) || []).length;
+/* an "excerpt" must stay one even for scripts with no inter-word spaces
+   (Chinese/Japanese): split(/\s+/) yields ONE token there, so a word cap alone
+   would make the whole paste the MediaMetadata title / now-reading line. Cap
+   code units too, backing off a trailing lone high surrogate. */
+function excerpt(text, maxWords, maxChars = 60) {
+  let s = text.trim().split(/\s+/).slice(0, maxWords).join(" ");
+  if (s.length > maxChars) {
+    let cut = maxChars;
+    if ((s.charCodeAt(cut - 1) & 0xFC00) === 0xD800) cut--; /* never end on a lone high surrogate */
+    s = s.slice(0, cut).trim();
+  }
+  return s;
+}
 function setModelState(cls, txt) { modelState.className = "model-state " + cls; modelStateText.textContent = txt; }
 function showBanner(txt, { bar = false, error = false } = {}) {
   banner.hidden = false; banner.classList.toggle("error", error);
@@ -468,6 +489,9 @@ function showBanner(txt, { bar = false, error = false } = {}) {
   if (error && tocSheet.hidden && setSheet.hidden) banner.scrollIntoView({ block: "nearest" });
 }
 function hideBanner() { banner.hidden = true; }
+/* an error reports on ONE attempt, in ONE view, under ONE engine — and the banner
+   has no dismiss control, so anything that invalidates it must clear it */
+function clearErrorBanner() { if (!banner.hidden && banner.classList.contains("error")) hideBanner(); }
 
 function updateCount() { const n = words(textEl.value); countEl.textContent = `${n} ${n === 1 ? "word" : "words"}`; }
 updateCount();
@@ -822,7 +846,7 @@ function buildWav() {
 /* ---------------- media session ---------------- */
 function setMediaSession(playing) {
   if (!("mediaSession" in navigator)) return;
-  const title = (textEl.value.trim().split(/\s+/).slice(0, 7).join(" ") || "Lantern") + "…";
+  const title = (excerpt(textEl.value, 7) || "Lantern") + "…";
   const voiceOpt = voiceSel.selectedOptions[0];
   const artist = engine === "qwen"
     ? "Qwen3-TTS · " + (qwenVoiceName || "cherry")
@@ -975,7 +999,7 @@ readBtn.addEventListener("click", async () => {
   const text = textEl.value.trim();
   if (!text) { textEl.focus(); return; }
 
-  if (!banner.hidden && banner.classList.contains("error")) hideBanner(); /* stale error from a previous attempt */
+  clearErrorBanner(); /* stale error from a previous attempt */
   resetSession();
   const myToken = ++qrToken;
   qrAbort = new AbortController();
@@ -984,7 +1008,7 @@ readBtn.addEventListener("click", async () => {
   readBtn.textContent = "Stop reading";
   readBtn.classList.add("stopping", "working");
   player.hidden = false;
-  nowReading.textContent = text.split(/\s+/).slice(0, 10).join(" ") + "…";
+  nowReading.textContent = excerpt(text, 10) + "…";
   statusLine.textContent = "Warming up…";
   playerHint.hidden = false;
   setPlayIcon(true);
@@ -1077,7 +1101,8 @@ readBtn.addEventListener("click", async () => {
 
   mode = "done-live";
   playerHint.hidden = true;
-  statusLine.textContent = `Finished generating — ${fmt(totalDur)} total · still playing`;
+  saveBtn.disabled = false; /* chunks are complete the moment generation ends — exporting must not wait for playback to drain */
+  statusLine.textContent = `Finished generating — ${fmt(totalDur)} total · still playing · ready to save`;
   /* the rAF handoff check is throttled when the screen locks — also hand off
      when the last scheduled buffer actually finishes playing */
   const lastSrc = sources[sources.length - 1];
@@ -1355,6 +1380,9 @@ function parseEpub(arrayBuf) {
    library
    ================================================================ */
 let coverURLs = [];
+/* the storage-error path overwrites #libEmpty's copy; keep the pristine markup so a
+   recovered (retryable) IDB failure doesn't leave "storage is broken" on a healthy empty shelf */
+const LIB_EMPTY_HTML = libEmpty.innerHTML;
 async function renderLibrary() {
   let books, progress;
   try { [books, progress] = await Promise.all([dbAllBooks(), dbAllProgress()]); }
@@ -1369,6 +1397,7 @@ async function renderLibrary() {
   for (const u of coverURLs) URL.revokeObjectURL(u);
   coverURLs = [];
   shelf.innerHTML = "";
+  if (libEmpty.innerHTML !== LIB_EMPTY_HTML) libEmpty.innerHTML = LIB_EMPTY_HTML; /* trusted constant from our own static markup */
   libEmpty.hidden = books.length > 0;
   books.sort((a, b) => ((pmap.get(b.id) || {}).updatedAt || b.addedAt || 0) - ((pmap.get(a.id) || {}).updatedAt || a.addedAt || 0));
   for (const b of books) {
@@ -1442,7 +1471,7 @@ bookFile.addEventListener("change", async () => {
       showBanner(`<b>Couldn't save the book.</b> Device storage may be full — free some space and try again.`, { error: true });
       return;
     }
-    if (!banner.hidden && banner.classList.contains("error")) hideBanner();
+    clearErrorBanner();
     await renderLibrary();
   } finally {
     addBookBtn.disabled = false; addBookBtn.textContent = "Add a book · EPUB";
@@ -1602,7 +1631,11 @@ async function ensureReaderAudio() {
       if (rd.ctx !== ctx || !rd.book || !rd.started) return;
       const running = ctx.state === "running";
       rd.playing = running;
-      setReaderIcon(running ? "pause" : "play");
+      /* the start-up suspended→running transition is not an interruption: it fires
+         right after readerPlayFrom set the busy pulse and would wipe it for the
+         whole engine warm-up. rd.playing is still tracked above, and the icon is
+         settled from it once the engine is ready. */
+      if (!rPlay.classList.contains("working")) setReaderIcon(running ? "pause" : "play");
     };
   }
   try { await rd.ctx.resume(); } catch {}
@@ -1640,6 +1673,7 @@ async function readerPlayFrom(si) {
   rd.abortCtl = myAbort;
   rd.playing = true; rd.started = true;
   setReaderIcon("busy");
+  updateReaderStatus(); /* rd.started && !rd.genDone → truthful "generating…" line, not "tap play to listen" */
   (async () => {
   await ensureReaderAudio();
   if (myToken !== rd.token) return;
@@ -1656,7 +1690,7 @@ async function readerPlayFrom(si) {
   }
   if (myToken !== rd.token) return;
 
-  if (!banner.hidden && banner.classList.contains("error")) hideBanner();
+  clearErrorBanner();
   setReaderIcon(rd.playing ? "pause" : "play"); /* a pause tap during the awaits must stick */
   setReaderMediaSession(rd.playing);
   cancelAnimationFrame(rd.raf);
@@ -1665,6 +1699,9 @@ async function readerPlayFrom(si) {
   rd.scheduleT = 0; rd.t0 = 0;
 
   const chAtStart = rd.ch;
+  /* rd.cache is one Map for the app's whole life — teardown only clears it, so a
+     key without book identity would let one book's PCM answer another book's lookup */
+  const bookAtStart = rd.book.id;
   let genFailed = false;
   for (let i = si; i < rd.sentences.length; i++) {
     /* backpressure: stay ~90 s of audio ahead of the clock, no further — a
@@ -1673,7 +1710,7 @@ async function readerPlayFrom(si) {
       await new Promise(r => setTimeout(r, 250));
       if (myToken !== rd.token) return;
     }
-    const key = `${engine}:${engine === "qwen" ? qwenVoiceName : voiceSel.value}:${speed}:${chAtStart}:${i}`;
+    const key = `${bookAtStart}:${engine}:${engine === "qwen" ? qwenVoiceName : voiceSel.value}:${speed}:${chAtStart}:${i}`;
     const sentText = rd.sentences[i]; /* bind now — by the time the lock frees, index i may belong to another chapter */
     let f32 = rd.cache.get(key);
     if (f32 === undefined) {
@@ -1695,11 +1732,14 @@ async function readerPlayFrom(si) {
         }
         break;
       }
+      if (myToken !== rd.token) return; /* superseded mid-generate: kokoro can't be
+        aborted in flight, so an orphaned result lands here AFTER the next session
+        already cleared the cache — it must never write into it */
       rd.cache.set(key, f32);
       /* bounded cache: recent sentences only — enough for instant back-skips */
       if (rd.cache.size > 48) rd.cache.delete(rd.cache.keys().next().value);
     }
-    if (myToken !== rd.token) return;
+    if (myToken !== rd.token) return; /* still needed: the cache-hit path skips the fence above */
     if (!f32 || !f32.length) continue; /* a sentence can synthesize to nothing */
     const buf = rd.ctx.createBuffer(1, f32.length, SR);
     buf.copyToChannel(f32, 0);
@@ -1896,9 +1936,13 @@ function setEngine(e) {
   if (engine === e) return;
   engine = e;
   try { localStorage.setItem("lantern.engine", e); } catch {}
+  /* the previous engine's error describes a configuration that is no longer
+     selected (the engine !== e guard above means it can never clear an error
+     the newly selected engine just raised) */
+  clearErrorBanner();
   /* the kokoro download banner is meaningless on the server engine (the download
      itself continues in the background and becomes a warm cache) */
-  if (e === "qwen" && !banner.hidden && !banner.classList.contains("error")) hideBanner();
+  if (e === "qwen" && !banner.hidden) hideBanner();
   applyEngineUI();
   readerSettingsChanged();
 }
@@ -1922,6 +1966,7 @@ function commitQwenUrl() {
   if (v !== qwenServer) {
     qwenServer = v;
     try { localStorage.setItem("lantern.qwenUrl", v); } catch {}
+    clearErrorBanner(); /* "set your server first" is answered the moment an address is committed */
     applyEngineUI();
     readerSettingsChanged();
   }
@@ -2027,6 +2072,10 @@ function showView(name) {
   if (activeView === name) return;
   if (activeView === "reader" && name !== "reader") readerTeardown();
   if (activeView === "paste" && name !== "paste") stopQuickRead();
+  /* an error raised in one view must not follow the user into another, where
+     "this book" / "tap a sentence" refer to nothing on screen. Guarded on
+     activeView so the very first route() can't wipe the boot-failure banner. */
+  if (activeView) clearErrorBanner();
   activeView = name;
   closeSheets(); /* sheets are shared between views — never leave one floating across a switch */
   viewLibrary.classList.toggle("active", name === "library");

@@ -67,6 +67,7 @@ export class KokoroTTS {
   async generate(text, { voice, speed } = {}) {
     const cfg = CFG();
     const i = (globalThis.__TTS_GEN = (globalThis.__TTS_GEN || 0) + 1) - 1;
+    (globalThis.__TTS_GEN_TEXTS = globalThis.__TTS_GEN_TEXTS || []).push(text);
     await sleep(cfg.chunkDelay);
     if (cfg.streamFailAfter >= 0 && i >= cfg.streamFailAfter) throw new Error("mock: synthesis failed");
     const n = i === cfg.emptyChunkAt ? 0 : Math.round(24000 * cfg.chunkSeconds);
