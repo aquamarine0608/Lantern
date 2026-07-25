@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Lantern — read anything aloud</title>
+<meta name="theme-color" content="#0E1420">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Lantern">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" href="icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink:   #0E1420;  /* background night */
+    --page:  #161E2E;  /* surfaces */
+    --line:  #232E42;  /* hairlines */
+    --chalk: #E8EDF5;  /* primary text */
+    --mist:  #8FA0B8;  /* secondary text */
+    --lamp:  #F2B24C;  /* the one accent: warm reading-lamp amber */
+    --ember: #E06A55;  /* stop / error */
+    --serif: "Instrument Serif", Georgia, serif;
+    --body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--ink);
+    color: var(--chalk);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.45;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 14px 16px 28px; display: flex; flex-direction: column; gap: 14px; min-height: 100dvh; }
+
+  /* ---------- header ---------- */
+  header { display: flex; align-items: baseline; justify-content: space-between; padding: 6px 2px 0; }
+  .wordmark { font-family: var(--serif); font-style: italic; font-weight: 400; font-size: 30px; letter-spacing: 0.01em; }
+  .wordmark .dotless { color: var(--lamp); }
+  .model-state { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--mist); }
+  .model-state .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--mist); opacity: .5; }
+  .model-state.ready .dot { background: var(--lamp); opacity: 1; box-shadow: 0 0 8px rgba(242,178,76,.55); }
+  .model-state.busy .dot { background: var(--lamp); opacity: 1; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+
+  /* ---------- the page (text input) ---------- */
+  .page { position: relative; background: var(--page); border: 1px solid var(--line); border-radius: 16px; display: flex; flex-direction: column; flex: 1; min-height: 34dvh; }
+  textarea {
+    flex: 1; width: 100%; resize: none; background: transparent; border: 0; outline: none;
+    color: var(--chalk); font-family: var(--body); font-size: 17px; line-height: 1.6;
+    padding: 16px 16px 8px; border-radius: 16px;
+  }
+  textarea::placeholder { color: var(--mist); opacity: .55; }
+  .page-foot { display: flex; justify-content: space-between; align-items: center; padding: 4px 14px 10px; }
+  .count { font-family: var(--mono); font-size: 11.5px; color: var(--mist); opacity: .8; }
+  .clear-btn { background: none; border: 0; color: var(--mist); font-size: 13px; padding: 4px 6px; cursor: pointer; }
+  .clear-btn:active { color: var(--chalk); }
+
+  /* ---------- voice + speed ---------- */
+  .controls { display: flex; gap: 10px; align-items: stretch; }
+  .voice-wrap { flex: 1; position: relative; background: var(--page); border: 1px solid var(--line); border-radius: 12px; display: flex; align-items: center; }
+  .voice-wrap::after { content: "▾"; position: absolute; right: 12px; color: var(--mist); font-size: 12px; pointer-events: none; }
+  select {
+    appearance: none; -webkit-appearance: none; width: 100%; background: transparent; border: 0; outline: none;
+    color: var(--chalk); font-family: var(--body); font-size: 15px; padding: 12px 30px 12px 13px;
+  }
+  .speeds { display: flex; background: var(--page); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .speeds button {
+    background: none; border: 0; color: var(--mist); font-family: var(--mono); font-size: 13px;
+    padding: 0 11px; cursor: pointer; border-left: 1px solid var(--line);
+  }
+  .speeds button:first-child { border-left: 0; }
+  .speeds button.on { color: var(--ink); background: var(--lamp); font-weight: 600; }
+
+  /* ---------- primary action ---------- */
+  .primary {
+    width: 100%; border: 0; border-radius: 14px; padding: 15px; font-size: 17px; font-weight: 600;
+    background: var(--lamp); color: var(--ink); cursor: pointer;
+    transition: transform .06s ease, background .2s ease;
+  }
+  .primary:active { transform: scale(.985); }
+  .primary:disabled { opacity: .45; }
+  .primary.stopping { background: var(--ember); color: var(--chalk); }
+  .primary.working { animation: breathe 2.2s ease-in-out infinite; }
+  @keyframes breathe { 50% { box-shadow: 0 0 22px rgba(242,178,76,.35); } }
+  @media (prefers-reduced-motion: reduce) { .primary.working { animation: none; } .model-state.busy .dot { animation: none; } }
+
+  /* ---------- model download banner ---------- */
+  .banner { background: var(--page); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; font-size: 13.5px; color: var(--mist); }
+  .banner b { color: var(--chalk); font-weight: 600; }
+  .banner .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 9px; overflow: hidden; }
+  .banner .bar i { display: block; height: 100%; width: 0%; background: var(--lamp); border-radius: 2px; transition: width .25s ease; }
+  .banner.error { border-color: rgba(224,106,85,.5); color: var(--chalk); }
+
+  /* ---------- player ---------- */
+  .player { background: var(--page); border: 1px solid var(--line); border-radius: 16px; padding: 14px 14px 12px; display: flex; flex-direction: column; gap: 10px; }
+  .now-reading { font-family: var(--serif); font-style: italic; font-size: 16px; color: var(--chalk); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status-line { font-size: 12.5px; color: var(--mist); }
+  canvas.wave { width: 100%; height: 56px; display: block; touch-action: none; border-radius: 6px; }
+  .time-row { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 12px; color: var(--mist); }
+  .player-btns { display: flex; gap: 10px; align-items: center; }
+  .pbtn {
+    flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+    width: 52px; height: 52px; border-radius: 50%; border: 1px solid var(--line);
+    background: var(--ink); color: var(--chalk); cursor: pointer;
+  }
+  .pbtn.main { width: 60px; height: 60px; background: var(--lamp); border: 0; color: var(--ink); }
+  .pbtn:active { transform: scale(.96); }
+  .pbtn svg { width: 22px; height: 22px; fill: currentColor; }
+  .pbtn.main svg { width: 26px; height: 26px; }
+  .pbtn:disabled { opacity: .35; }
+  .player-spacer { flex: 1; }
+  .save-btn { border: 1px solid var(--line); background: var(--ink); color: var(--mist); border-radius: 12px; padding: 12px 16px; font-size: 14px; cursor: pointer; }
+  .save-btn:not(:disabled) { color: var(--chalk); }
+  .save-btn:disabled { opacity: .4; }
+  .hint { font-size: 11.5px; color: var(--mist); opacity: .75; }
+
+  footer { text-align: center; font-size: 11.5px; color: var(--mist); opacity: .65; padding-top: 2px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="wordmark">Lanter<span class="dotless">n</span></div>
+    <div class="model-state" id="modelState"><span class="dot"></span><span id="modelStateText">voice model not loaded</span></div>
+  </header>
+
+  <section class="page">
+    <textarea id="text" placeholder="Paste a chapter, an article, anything…" spellcheck="false"></textarea>
+    <div class="page-foot">
+      <span class="count" id="count">0 words</span>
+      <button class="clear-btn" id="clearBtn">Clear</button>
+    </div>
+  </section>
+
+  <div class="controls">
+    <div class="voice-wrap">
+      <select id="voice" aria-label="Voice">
+        <optgroup label="American">
+          <option value="af_heart">Heart · female, warm — best overall</option>
+          <option value="af_bella">Bella · female, expressive</option>
+          <option value="af_nicole">Nicole · female, soft</option>
+          <option value="am_michael">Michael · male, steady</option>
+          <option value="am_fenrir">Fenrir · male, deep</option>
+          <option value="am_puck">Puck · male, bright</option>
+        </optgroup>
+        <optgroup label="British">
+          <option value="bf_emma">Emma · female</option>
+          <option value="bm_george">George · male</option>
+          <option value="bm_fable">Fable · male, narrator</option>
+        </optgroup>
+      </select>
+    </div>
+    <div class="speeds" id="speeds">
+      <button data-s="0.8">0.8×</button><button data-s="1" class="on">1×</button><button data-s="1.2">1.2×</button><button data-s="1.5">1.5×</button>
+    </div>
+  </div>
+
+  <button class="primary" id="readBtn">Read aloud</button>
+
+  <div class="banner" id="banner" hidden>
+    <span id="bannerText"></span>
+    <div class="bar" id="bannerBar" hidden><i id="bannerFill"></i></div>
+  </div>
+
+  <section class="player" id="player" hidden>
+    <div class="now-reading" id="nowReading"></div>
+    <div class="status-line" id="statusLine"></div>
+    <canvas class="wave" id="wave"></canvas>
+    <div class="time-row"><span id="tElapsed">0:00</span><span id="tTotal">0:00</span></div>
+    <div class="player-btns">
+      <button class="pbtn main" id="playBtn" aria-label="Pause">
+        <svg id="iconPause" viewBox="0 0 24 24"><rect x="5" y="4" width="5" height="16" rx="1.5"/><rect x="14" y="4" width="5" height="16" rx="1.5"/></svg>
+        <svg id="iconPlay" viewBox="0 0 24 24" hidden><path d="M7 4.8v14.4c0 1 1.1 1.6 2 1.1l11-7.2c.8-.5.8-1.7 0-2.2L9 3.7c-.9-.5-2 .1-2 1.1z"/></svg>
+      </button>
+      <div class="player-spacer"></div>
+      <button class="save-btn" id="saveBtn" disabled>Save WAV</button>
+    </div>
+    <div class="hint" id="playerHint" hidden>No sound? Playback follows the ring/silent switch until this reading finishes generating.</div>
+  </section>
+
+  <footer>Runs entirely on this device · Kokoro-82M · English</footer>
+</div>
+
+<script type="module">
+import { KokoroTTS, TextSplitterStream } from "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
+
+/* ---------------- element refs ---------------- */
+const $ = id => document.getElementById(id);
+const textEl = $("text"), countEl = $("count"), readBtn = $("readBtn"),
+      banner = $("banner"), bannerText = $("bannerText"), bannerBar = $("bannerBar"), bannerFill = $("bannerFill"),
+      player = $("player"), nowReading = $("nowReading"), statusLine = $("statusLine"),
+      wave = $("wave"), tElapsed = $("tElapsed"), tTotal = $("tTotal"),
+      playBtn = $("playBtn"), iconPlay = $("iconPlay"), iconPause = $("iconPause"),
+      saveBtn = $("saveBtn"), playerHint = $("playerHint"),
+      modelState = $("modelState"), modelStateText = $("modelStateText"),
+      voiceSel = $("voice"), speedsEl = $("speeds"), clearBtn = $("clearBtn");
+
+/* ---------------- persisted prefs ---------------- */
+let speed = 1;
+try {
+  const t = localStorage.getItem("lantern.text");   if (t) textEl.value = t;
+  const v = localStorage.getItem("lantern.voice");  if (v) voiceSel.value = v;
+  const s = localStorage.getItem("lantern.speed");  if (s) speed = parseFloat(s) || 1;
+} catch {}
+for (const b of speedsEl.children) b.classList.toggle("on", parseFloat(b.dataset.s) === speed);
+
+const SR = 24000;
+let tts = null, modelLoading = null;
+
+/* session state */
+let mode = "idle"; // idle | generating | done-live | file
+let ctx = null, streamDest = null, audioEl = null;
+let sources = [], chunks = [], envelope = [];
+let t0 = 0, scheduleT = 0, totalDur = 0, sentDone = 0, sentTotal = 1;
+let aborted = false, wavURL = null, rafId = 0;
+
+/* ---------------- small helpers ---------------- */
+const fmt = s => { s = Math.max(0, Math.floor(s)); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
+const words = t => (t.trim().match(/\S+/g) || []).length;
+function setModelState(cls, txt) { modelState.className = "model-state " + cls; modelStateText.textContent = txt; }
+function showBanner(txt, { bar = false, error = false } = {}) {
+  banner.hidden = false; banner.classList.toggle("error", error);
+  bannerText.innerHTML = txt; bannerBar.hidden = !bar;
+}
+function hideBanner() { banner.hidden = true; }
+
+function updateCount() { countEl.textContent = `${words(textEl.value)} words`; }
+updateCount();
+let saveTimer;
+textEl.addEventListener("input", () => {
+  updateCount();
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => { try { localStorage.setItem("lantern.text", textEl.value); } catch {} }, 400);
+});
+clearBtn.addEventListener("click", () => { textEl.value = ""; updateCount(); try { localStorage.removeItem("lantern.text"); } catch {} textEl.focus(); });
+voiceSel.addEventListener("change", () => { try { localStorage.setItem("lantern.voice", voiceSel.value); } catch {} });
+speedsEl.addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  speed = parseFloat(b.dataset.s);
+  for (const c of speedsEl.children) c.classList.toggle("on", c === b);
+  try { localStorage.setItem("lantern.speed", String(speed)); } catch {}
+});
+
+/* ---------------- model loading ---------------- */
+function loadModel() {
+  if (tts) return Promise.resolve(tts);
+  if (modelLoading) return modelLoading;
+  setModelState("busy", "downloading voice model");
+  const seen = new Map();
+  showBanner(`<b>First run:</b> downloading the voice model (about 90 MB). It's stored on this device — after this, Lantern reads offline.`, { bar: true });
+  modelLoading = KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
+    dtype: "q8",
+    device: "wasm",
+    progress_callback: p => {
+      if (p.status === "progress" && p.total) {
+        seen.set(p.file, { loaded: p.loaded, total: p.total });
+        let loaded = 0, total = 0;
+        for (const f of seen.values()) { loaded += f.loaded; total += f.total; }
+        const mb = x => (x / 1048576).toFixed(0);
+        bannerFill.style.width = `${(loaded / total * 100).toFixed(1)}%`;
+        bannerText.innerHTML = `<b>Downloading voice model</b> — ${mb(loaded)} of ${mb(total)} MB. One time only.`;
+      }
+    },
+  }).then(m => {
+    tts = m; hideBanner(); setModelState("ready", "voice model ready");
+    return m;
+  }).catch(err => {
+    modelLoading = null;
+    setModelState("", "voice model not loaded");
+    showBanner(`<b>Couldn't fetch the voice model.</b> The first run needs an internet connection; after that, Lantern works offline. Check your connection and try again.`, { error: true });
+    throw err;
+  });
+  return modelLoading;
+}
+
+/* ---------------- waveform ---------------- */
+const dpr = Math.min(window.devicePixelRatio || 1, 3);
+function sizeCanvas() {
+  const r = wave.getBoundingClientRect();
+  if (r.width === 0) return;
+  wave.width = Math.round(r.width * dpr); wave.height = Math.round(56 * dpr);
+}
+new ResizeObserver(sizeCanvas).observe(wave);
+
+function drawWave(frac) {
+  const W = wave.width, H = wave.height;
+  if (!W) return;
+  const g = wave.getContext("2d");
+  g.clearRect(0, 0, W, H);
+  const bw = 2.5 * dpr, gap = 2 * dpr, n = Math.max(1, Math.floor(W / (bw + gap)));
+  const m = envelope.length;
+  if (!m) return;
+  let peak = 0; for (let i = 0; i < m; i++) if (envelope[i] > peak) peak = envelope[i];
+  peak = peak || 1;
+  const playedX = frac * W;
+  for (let i = 0; i < n; i++) {
+    const a = Math.floor(i * m / n), b = Math.max(a + 1, Math.floor((i + 1) * m / n));
+    let v = 0; for (let j = a; j < b; j++) v = Math.max(v, envelope[j]);
+    const h = Math.max(2 * dpr, (v / peak) * H * 0.86);
+    const x = i * (bw + gap);
+    g.fillStyle = x < playedX ? "#F2B24C" : "rgba(143,160,184,0.35)";
+    const y = (H - h) / 2;
+    g.beginPath(); g.roundRect(x, y, bw, h, bw / 2); g.fill();
+  }
+}
+
+function pushEnvelope(f32) {
+  const win = 1200; // 50 ms @ 24 kHz
+  for (let i = 0; i < f32.length; i += win) {
+    let s = 0; const end = Math.min(i + win, f32.length);
+    for (let j = i; j < end; j++) s += f32[j] * f32[j];
+    envelope.push(Math.sqrt(s / (end - i)));
+  }
+}
+
+/* seek — only in finalized file mode */
+function seekFromEvent(e) {
+  if (mode !== "file" || !audioEl || !audioEl.duration) return;
+  const r = wave.getBoundingClientRect();
+  const frac = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  audioEl.currentTime = frac * audioEl.duration;
+  drawWave(frac);
+}
+wave.addEventListener("pointerdown", e => { seekFromEvent(e); wave.setPointerCapture(e.pointerId); });
+wave.addEventListener("pointermove", e => { if (e.buttons) seekFromEvent(e); });
+
+/* ---------------- playback clock ---------------- */
+function liveElapsed() { return ctx ? Math.min(Math.max(0, ctx.currentTime - t0), totalDur) : 0; }
+function tick() {
+  rafId = requestAnimationFrame(tick);
+  let el = 0, tot = totalDur;
+  if (mode === "file" && audioEl) { el = audioEl.currentTime; tot = audioEl.duration || totalDur; }
+  else el = liveElapsed();
+  tElapsed.textContent = fmt(el); tTotal.textContent = fmt(tot);
+  drawWave(tot ? el / tot : 0);
+  /* live playback drained after generation finished → hand off to file player */
+  if (mode === "done-live" && el >= totalDur - 0.06) switchToFile(totalDur, false);
+}
+
+/* ---------------- WAV encoding ---------------- */
+function buildWav() {
+  let len = 0; for (const c of chunks) len += c.length;
+  const buf = new ArrayBuffer(44 + len * 2), v = new DataView(buf);
+  const wstr = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  wstr(0, "RIFF"); v.setUint32(4, 36 + len * 2, true); wstr(8, "WAVE");
+  wstr(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, SR, true); v.setUint32(28, SR * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  wstr(36, "data"); v.setUint32(40, len * 2, true);
+  let o = 44;
+  for (const c of chunks) for (let i = 0; i < c.length; i++, o += 2) {
+    const s = Math.max(-1, Math.min(1, c[i]));
+    v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+/* ---------------- media session ---------------- */
+function setMediaSession(playing) {
+  if (!("mediaSession" in navigator)) return;
+  const title = (textEl.value.trim().split(/\s+/).slice(0, 7).join(" ") || "Lantern") + "…";
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title, artist: voiceSel.selectedOptions[0].textContent.split("·")[0].trim(),
+    album: "Lantern",
+    artwork: [{ src: "icon-512.png", sizes: "512x512", type: "image/png" }],
+  });
+  navigator.mediaSession.playbackState = playing ? "playing" : "paused";
+  navigator.mediaSession.setActionHandler("play", () => togglePlay(true));
+  navigator.mediaSession.setActionHandler("pause", () => togglePlay(false));
+}
+
+/* ---------------- session control ---------------- */
+function resetSession() {
+  cancelAnimationFrame(rafId);
+  for (const s of sources) { try { s.stop(); } catch {} }
+  sources = []; chunks = []; envelope = [];
+  if (ctx) { try { ctx.close(); } catch {} ctx = null; }
+  if (wavURL) { URL.revokeObjectURL(wavURL); wavURL = null; }
+  if (audioEl) { audioEl.pause(); audioEl.srcObject = null; audioEl.removeAttribute("src"); }
+  totalDur = 0; sentDone = 0; aborted = false;
+  saveBtn.disabled = true;
+}
+
+function setPlayIcon(playing) { iconPlay.hidden = playing; iconPause.hidden = !playing; playBtn.setAttribute("aria-label", playing ? "Pause" : "Play"); }
+
+function togglePlay(force) {
+  const wantPlay = force !== undefined ? force : (mode === "file" ? audioEl.paused : ctx && ctx.state === "suspended");
+  if (mode === "file") {
+    if (wantPlay) { if (audioEl.currentTime >= (audioEl.duration || 0) - 0.05) audioEl.currentTime = 0; audioEl.play(); }
+    else audioEl.pause();
+    setPlayIcon(wantPlay);
+  } else if (ctx) {
+    /* generation may still be running — suspend only pauses playback, synthesis continues */
+    if (wantPlay) ctx.resume(); else ctx.suspend();
+    setPlayIcon(wantPlay);
+  }
+  setMediaSession(wantPlay);
+}
+playBtn.addEventListener("click", () => togglePlay());
+
+function switchToFile(offset, autoplay) {
+  if (mode === "file") return;
+  mode = "file";
+  for (const s of sources) { try { s.stop(); } catch {} }
+  sources = [];
+  if (ctx) { try { ctx.close(); } catch {} ctx = null; }
+  if (!wavURL) wavURL = URL.createObjectURL(buildWav());
+  audioEl.srcObject = null;
+  audioEl.src = wavURL;
+  audioEl.currentTime = Math.min(offset, totalDur);
+  statusLine.textContent = `${sentDone} sentence${sentDone === 1 ? "" : "s"} · ${fmt(totalDur)} · tap the wave to jump around`;
+  playerHint.hidden = true;
+  saveBtn.disabled = false;
+  if (autoplay) audioEl.play();
+  setPlayIcon(autoplay && offset < totalDur);
+  setMediaSession(!!autoplay);
+}
+
+/* ---------------- main flow ---------------- */
+readBtn.addEventListener("click", async () => {
+  if (mode === "generating") { /* acting as Stop */
+    aborted = true;
+    return;
+  }
+  const text = textEl.value.trim();
+  if (!text) { textEl.focus(); return; }
+
+  resetSession();
+  mode = "generating";
+  readBtn.textContent = "Stop reading";
+  readBtn.classList.add("stopping", "working");
+  player.hidden = false;
+  nowReading.textContent = text.split(/\s+/).slice(0, 10).join(" ") + "…";
+  statusLine.textContent = "Warming up…";
+  playerHint.hidden = false;
+  setPlayIcon(true);
+  sizeCanvas();
+
+  /* audio graph — created inside the tap so iOS allows it.
+     Routing through a hidden <audio> element keeps playback alive
+     when the screen locks and shows lock-screen controls. */
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  await ctx.resume();
+  streamDest = ctx.createMediaStreamDestination();
+  if (!audioEl) { audioEl = new Audio(); audioEl.setAttribute("playsinline", ""); document.body.appendChild(audioEl); }
+  audioEl.srcObject = streamDest.stream;
+  audioEl.play().catch(() => {});
+  setMediaSession(true);
+
+  try { await loadModel(); }
+  catch { readBtn.textContent = "Read aloud"; readBtn.classList.remove("stopping", "working"); mode = "idle"; player.hidden = true; return; }
+
+  sentTotal = Math.max(1, (text.match(/[.!?…]+["'")\]]*\s|\n+/g) || []).length + 1);
+  t0 = 0; scheduleT = 0; totalDur = 0;
+  cancelAnimationFrame(rafId); tick();
+
+  const splitter = new TextSplitterStream();
+  const stream = tts.stream(splitter, { voice: voiceSel.value, speed });
+  splitter.push(text); splitter.close();
+
+  try {
+    for await (const { audio } of stream) {
+      if (aborted) break;
+      const f32 = audio.audio;
+      chunks.push(f32); pushEnvelope(f32);
+      const buf = ctx.createBuffer(1, f32.length, SR);
+      buf.copyToChannel(f32, 0);
+      const src = ctx.createBufferSource();
+      src.buffer = buf; src.connect(streamDest);
+      if (t0 === 0) { t0 = ctx.currentTime + 0.12; scheduleT = t0; }
+      const at = Math.max(scheduleT, ctx.currentTime + 0.03);
+      src.start(at); scheduleT = at + buf.duration;
+      totalDur = scheduleT - t0;
+      sources.push(src);
+      sentDone++;
+      statusLine.textContent = `Reading aloud — sentence ${sentDone} of ~${Math.max(sentTotal, sentDone)} · generating on-device`;
+    }
+  } catch (err) {
+    console.error(err);
+    showBanner(`<b>Something went wrong while generating.</b> Try again with a shorter text, or reload the page.`, { error: true });
+  }
+
+  readBtn.textContent = "Read aloud";
+  readBtn.classList.remove("stopping", "working");
+
+  if (aborted && chunks.length === 0) { mode = "idle"; player.hidden = true; resetSession(); return; }
+  if (aborted) { switchToFile(0, false); tick(); return; }
+
+  mode = "done-live";
+  statusLine.textContent = `Finished generating — ${fmt(totalDur)} total · still playing`;
+});
+
+saveBtn.addEventListener("click", () => {
+  if (!wavURL) wavURL = URL.createObjectURL(buildWav());
+  const a = document.createElement("a");
+  a.href = wavURL;
+  a.download = `lantern-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.wav`;
+  document.body.appendChild(a); a.click(); a.remove();
+});
+
+/* file-mode play state sync */
+document.addEventListener("visibilitychange", () => { if (mode === "file" && audioEl) setPlayIcon(!audioEl.paused); });
+
+/* ---------------- service worker (offline shell) ---------------- */
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+}
+</script>
+</body>
+</html>
