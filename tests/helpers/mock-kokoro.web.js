@@ -60,6 +60,16 @@ export class KokoroTTS {
           pc({ status: "progress", file: f.file, loaded: (f.total * s) / cfg.progressSteps, total: f.total });
     }
     if (cfg.loadFail) throw new Error("mock: model download failed");
+    /* mirror real transformers.js: a successful load leaves the model bytes in the
+       "transformers-cache" Cache — the app now verifies this before trusting its
+       lantern.modelReady flag */
+    try {
+      const c = await caches.open("transformers-cache");
+      await c.put(
+        "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model_quantized.onnx",
+        new Response(new Blob(["mock-onnx-bytes"]))
+      );
+    } catch {}
     return new KokoroTTS();
   }
 

@@ -71,6 +71,27 @@ test.describe("persistence across refreshes", () => {
     expect(flag).toBeNull();
   });
 
+  test("a stale modelReady flag (evicted model cache) never fakes a warm load", async ({ page, mockTTS }) => {
+    // the flag says "saved on this device" but the transformers cache is empty —
+    // exactly what iOS storage eviction (or a quota-exceeded first download) leaves behind
+    await mockTTS({ loadDelay: 1500, progressSteps: 1, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript(() => localStorage.setItem("lantern.modelReady", "1"));
+    await page.goto("/#paste");
+
+    // the boot warm-up must not trust the flag: no silent 90 MB background download
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(() => window.__TTS_LOADS || 0)).toBe(0);
+
+    // a real read walks the claim back: the banner says DOWNLOADING, never "no download"
+    await startRead(page);
+    await expect(page.locator("#bannerText")).toContainText("Downloading", { timeout: 10_000 });
+    await waitForFileMode(page);
+    // the successful load stored the (mock) bytes, so the flag may honestly return
+    await expect
+      .poll(() => page.evaluate(() => localStorage.getItem("lantern.modelReady")), { timeout: 5_000 })
+      .toBe("1");
+  });
+
   test("reload mid-generation comes back to a clean idle page with the text intact", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 400, chunkSeconds: 0.5 });
     await page.goto("/#paste");

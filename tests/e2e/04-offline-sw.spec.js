@@ -97,6 +97,36 @@ test.describe("service worker and offline", () => {
     await expect(page.locator("#banner")).toBeVisible();
   });
 
+  test("a service worker update carries runtime-cached CDN assets forward", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await warmUp(page);
+    // simulate a runtime-cached asset that is NOT in CDN_PRECACHE (onnxruntime's wasm
+    // is fetched lazily at model-load time and lands in the CDN cache the same way)
+    const WASM = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/dist/ort-wasm.wasm";
+    await page.evaluate(async (u) => {
+      const name = (await caches.keys()).find((k) => k.startsWith("lantern-cdn-"));
+      await (await caches.open(name)).put(u, new Response("wasm-bytes"));
+    }, WASM);
+
+    // a VERSION bump must migrate the WHOLE cdn cache, not just the pinned three
+    await page.evaluate(() => navigator.serviceWorker.register("/sw.js?v=vNEXT"));
+    await page.waitForFunction(async (u) => {
+      for (const name of await caches.keys()) {
+        if (!name.includes("vNEXT") || !name.includes("cdn")) continue;
+        if (await (await caches.open(name)).match(u)) return true;
+      }
+      return false;
+    }, WASM, { timeout: 15_000 });
+
+    // the pinned precache entries came along too
+    const hasKokoro = await page.evaluate(async () => {
+      const name = (await caches.keys()).find((k) => k.includes("vNEXT") && k.includes("cdn"));
+      const keys = (await (await caches.open(name)).keys()).map((r) => r.url);
+      return keys.some((u) => u.includes("kokoro.web.js"));
+    });
+    expect(hasKokoro).toBe(true);
+  });
+
   test("the Google Fonts stylesheet is cached for offline use", async ({ page }) => {
     await warmUp(page);
     const fontsCached = await page.evaluate(async () => {

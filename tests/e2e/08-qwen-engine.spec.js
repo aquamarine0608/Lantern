@@ -306,6 +306,19 @@ test.describe("Qwen3-TTS server engine", () => {
     await expect(page.locator("#appFooter")).toContainText("Runs entirely on this device");
   });
 
+  test("the empty shelf's privacy line tracks the engine too", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("#libEmpty")).toContainText("entirely on this device");
+    await page.click("#libVoiceBtn");
+    await page.click('#engineBtns button[data-e="qwen"]');
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await expect(page.locator("#libEmpty")).toContainText("streamed from your server");
+    await page.click("#libVoiceBtn");
+    await page.click('#engineBtns button[data-e="kokoro"]');
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await expect(page.locator("#libEmpty")).toContainText("entirely on this device");
+  });
+
   test("a server error banner dies when the engine or the view changes", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5 });
     await page.goto("/");

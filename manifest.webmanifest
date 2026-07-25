@@ -1,7 +1,7 @@
 {
   "name": "Lantern",
   "short_name": "Lantern",
-  "description": "Read anything aloud, entirely on this device.",
+  "description": "Read EPUBs and pasted text aloud — with an on-device voice, or your own Qwen3-TTS server.",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#0E1420",

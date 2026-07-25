@@ -2,7 +2,7 @@
    The ~90 MB Kokoro model is cached separately by transformers.js (browser Cache API),
    so after one successful run the whole app works in airplane mode. */
 
-const VERSION = "v4";
+const VERSION = "v5";
 const SHELL = `lantern-shell-${VERSION}`;
 const CDN = `lantern-cdn-${VERSION}`;
 const SHELL_FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-180.png", "./icon-512.png"];
@@ -20,20 +20,31 @@ self.addEventListener("install", (e) => {
       // best-effort: the first visit fetches the CDN module before this worker controls
       // the page, so precache it here — otherwise "offline after one visit" silently
       // depends on the volatile HTTP cache until a second visit.
-      caches.open(CDN).then((c) =>
-        Promise.all(
+      caches.open(CDN).then(async (c) => {
+        /* Carry the WHOLE previous CDN cache forward, not just CDN_PRECACHE: the
+           runtime handler below also stores onnxruntime's .wasm/.mjs (fetched
+           lazily at model-load time, i.e. only when the user taps play) and the
+           fonts.gstatic woff2 files. Every URL in this cache is version-pinned
+           and immutable, and activate() is about to delete the old cache —
+           dropping them would silently un-offline a device that was already
+           fully offline, and nothing re-fetches the wasm until the next
+           synthesis happens to run while online. */
+        for (const k of await caches.keys()) {
+          if (k === CDN || !k.startsWith("lantern-cdn-")) continue;
+          const old = await caches.open(k);
+          for (const req of await old.keys()) {
+            if (await c.match(req)) continue;
+            const res = await old.match(req);
+            if (res) await c.put(req, res);
+          }
+        }
+        /* first install (nothing to migrate): fetch the pinned entries */
+        await Promise.all(
           CDN_PRECACHE.map((u) =>
-            c.match(u).then((hit) =>
-              hit ||
-              // migrate from any previous versioned cache first — these URLs are pinned
-              // and immutable, and the CDN may be unreachable during an update install
-              caches.match(u).then((old) =>
-                old ? c.put(u, old) : fetch(u).then((res) => { if (cacheable(res)) return c.put(u, res); })
-              )
-            )
+            c.match(u).then((hit) => hit || fetch(u).then((res) => { if (cacheable(res)) return c.put(u, res); }))
           )
-        )
-      ).catch(() => {}),
+        );
+      }).catch(() => {}),
     ]).then(() => self.skipWaiting())
   );
 });

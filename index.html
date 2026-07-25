@@ -218,7 +218,7 @@
       <input type="file" id="bookFile" accept=".epub,application/epub+zip" hidden>
     </div>
     <div class="shelf" id="shelf"></div>
-    <p class="lib-empty" id="libEmpty" hidden>Your shelf is empty.<br>Add a DRM-free EPUB and Lantern will read it aloud — entirely on this device.</p>
+    <p class="lib-empty" id="libEmpty" data-copy="shelf" hidden>Your shelf is empty.<br>Add a DRM-free EPUB and Lantern will read it aloud — entirely on this device.</p>
   </section>
 
   <!-- ---------- paste-to-read ---------- -->
@@ -444,6 +444,17 @@ function precacheVoices() {
 }
 addEventListener("online", () => { if (tts && engine === "kokoro") precacheVoices(); });
 
+/* the modelReady flag and the model bytes live in DIFFERENT stores with different
+   lifetimes: iOS evicts the Cache API under storage pressure (and the 7-day ITP cap)
+   while keeping localStorage, and a quota-exceeded download resolves without ever
+   storing the bytes. Ask the cache itself before believing the flag. */
+const MODEL_ASSET = "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model_quantized.onnx";
+async function modelIsStored() {
+  if (!MODEL_CACHEABLE) return false;
+  try { return !!(await (await caches.open("transformers-cache")).match(MODEL_ASSET)); }
+  catch { return false; }
+}
+
 /* after the model is cached the only network dependency left is the per-voice
    style vector — say so instead of blaming the text */
 function kokoroErrorHtml(retryHint) {
@@ -554,6 +565,18 @@ function loadModel(quiet) {
   modelWasCached = cachedBefore;
   modelBusyText = cachedBefore ? "loading voice model" : "downloading voice model";
   setModelState("busy", modelBusyText);
+  /* the flag can outlive the bytes (eviction) or precede them (quota): verify it
+     against the real cache and walk the claims back if it lied. loadModel stays
+     synchronous, so the correction is provisional-async by design. */
+  if (cachedBefore) modelIsStored().then(ok => {
+    if (ok || tts || !modelLoading) return; /* flag was honest, or the load already settled */
+    modelWasCached = false; /* fixes the "from this device" progress text */
+    modelBusyText = "downloading voice model";
+    if (engine === "kokoro") setModelState("busy", modelBusyText);
+    try { localStorage.removeItem("lantern.modelReady"); } catch {}
+    if (!modelLoadQuiet && (banner.hidden || !banner.classList.contains("error")))
+      showBanner(`<b>Downloading the voice model…</b>${MODEL_CACHEABLE ? " One time only." : ""}`, { bar: true });
+  });
   const seen = new Map();
   if (!cachedBefore && !quiet) showBanner(MODEL_CACHEABLE
     ? `<b>First run:</b> downloading the voice model (about 90 MB). It's stored on this device — after this, Lantern reads offline.`
@@ -578,7 +601,11 @@ function loadModel(quiet) {
     tts = m;
     if (!banner.hidden && !banner.classList.contains("error")) hideBanner();
     if (engine === "kokoro") setModelState("ready", "voice model ready"); /* don't clobber the chip if the user switched engines mid-download */
-    try { if (MODEL_CACHEABLE) localStorage.setItem("lantern.modelReady", "1"); } catch {}
+    /* only claim "saved on this device" once it demonstrably is — a quota-exceeded
+       download resolves fine but stores nothing */
+    if (MODEL_CACHEABLE) modelIsStored().then(ok => {
+      try { ok ? localStorage.setItem("lantern.modelReady", "1") : localStorage.removeItem("lantern.modelReady"); } catch {}
+    });
     precacheVoices(); /* fire-and-forget: never gate the first read on it */
     return m;
   }).catch(err => {
@@ -593,7 +620,12 @@ function loadModel(quiet) {
 }
 /* once the model has been downloaded on this device, warm it up right away
    so reading starts instantly after a refresh (pointless when a server voice is active) */
-try { if (engine === "kokoro" && MODEL_CACHEABLE && localStorage.getItem("lantern.modelReady") === "1") loadModel(true).catch(() => {}); } catch {}
+try {
+  if (engine === "kokoro" && MODEL_CACHEABLE && localStorage.getItem("lantern.modelReady") === "1")
+    /* verified, not just flagged: an evicted model must never pull 90 MB in the
+       background with zero UI — the user taps play and gets the honest banner */
+    modelIsStored().then(ok => { if (ok) loadModel(true).catch(() => {}); });
+} catch {}
 
 /* ================================================================
    voice engines — Kokoro on-device, or Qwen3-TTS streamed from the
@@ -1386,9 +1418,19 @@ function parseEpub(arrayBuf) {
    library
    ================================================================ */
 let coverURLs = [];
-/* the storage-error path overwrites #libEmpty's copy; keep the pristine markup so a
-   recovered (retryable) IDB failure doesn't leave "storage is broken" on a healthy empty shelf */
-const LIB_EMPTY_HTML = libEmpty.innerHTML;
+/* the empty-shelf line repeats the footer's privacy claim, so it must be engine-aware
+   for the same reason: under the server engine every sentence leaves the device. The
+   storage-error path also overwrites this element — data-copy records whose text is
+   in it, so an engine switch can never wipe a live error message, and a recovered
+   (retryable) IDB failure can't leave "storage is broken" on a healthy empty shelf. */
+const libEmptyHtml = () => `Your shelf is empty.<br>Add a DRM-free EPUB and Lantern will read it aloud${
+  engine === "qwen" ? " — with the voice streamed from your server" : " — entirely on this device"}.`;
+function setLibEmptyCopy() {
+  const html = libEmptyHtml(); /* app-authored constant, no user data */
+  if (libEmpty.innerHTML !== html) libEmpty.innerHTML = html;
+  libEmpty.dataset.copy = "shelf";
+}
+function refreshLibEmptyCopy() { if (libEmpty.dataset.copy === "shelf") setLibEmptyCopy(); }
 async function renderLibrary() {
   let books, progress;
   try { [books, progress] = await Promise.all([dbAllBooks(), dbAllProgress()]); }
@@ -1397,13 +1439,14 @@ async function renderLibrary() {
     shelf.innerHTML = "";
     libEmpty.hidden = false;
     libEmpty.textContent = "Couldn't open Lantern's book storage. Private browsing can block it — try a normal window.";
+    libEmpty.dataset.copy = "error";
     return;
   }
   const pmap = new Map(progress.map(p => [p.bookId, p]));
   for (const u of coverURLs) URL.revokeObjectURL(u);
   coverURLs = [];
   shelf.innerHTML = "";
-  if (libEmpty.innerHTML !== LIB_EMPTY_HTML) libEmpty.innerHTML = LIB_EMPTY_HTML; /* trusted constant from our own static markup */
+  setLibEmptyCopy();
   libEmpty.hidden = books.length > 0;
   books.sort((a, b) => ((pmap.get(b.id) || {}).updatedAt || b.addedAt || 0) - ((pmap.get(a.id) || {}).updatedAt || a.addedAt || 0));
   for (const b of books) {
@@ -1491,7 +1534,9 @@ const rd = {
   book: null, ch: 0, si: 0, hl: -1, sentences: [],
   token: 0, playing: false, started: false, genDone: false,
   ctx: null, dest: null, sources: [], timings: [], scheduleT: 0, t0: 0,
-  cache: new Map(), raf: 0, userScrollAt: 0, progScroll: false, emptyRun: 0,
+  cache: new Map(), raf: 0, /* -Infinity, not 0: performance.now() starts at 0, so a 0
+    sentinel would read as "user scrolled at page load" and kill follow-along for 4 s */
+  userScrollAt: -Infinity, progScroll: false, emptyRun: 0,
 };
 let curSentEl = null;
 
@@ -1963,6 +2008,7 @@ function applyEngineUI() {
   appFooter.textContent = engine === "qwen"
     ? "Qwen3-TTS · streamed from your server"
     : "Runs entirely on this device · Kokoro-82M · English";
+  refreshLibEmptyCopy(); /* the shelf's empty-state carries the same claim as the footer */
 }
 function setEngine(e) {
   if (engine === e) return;

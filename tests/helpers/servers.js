@@ -45,7 +45,8 @@ function startAppServer(state) {
       req.socket.destroy();
       return;
     }
-    let pathname = decodeURIComponent(new URL(req.url, "http://x").pathname);
+    const reqUrl = new URL(req.url, "http://x");
+    let pathname = decodeURIComponent(reqUrl.pathname);
     if (pathname.endsWith("/")) pathname += "index.html";
     const file = path.normalize(path.join(ROOT, pathname));
     if (!file.startsWith(ROOT) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
@@ -53,11 +54,18 @@ function startAppServer(state) {
       res.end("not found");
       return;
     }
+    let body = fs.readFileSync(file);
+    /* /sw.js?v=<tag> serves a byte-different worker with that VERSION, so tests can
+       exercise the real update/migration path without editing the file on disk */
+    if (pathname === "/sw.js" && reqUrl.searchParams.has("v")) {
+      const v = (reqUrl.searchParams.get("v") || "").replace(/[^a-zA-Z0-9]/g, "");
+      body = Buffer.from(body.toString("utf8").replace(/const VERSION = "[^"]+";/, `const VERSION = "${v}";`));
+    }
     res.writeHead(200, {
       "content-type": MIME[path.extname(file)] || "application/octet-stream",
       "cache-control": "no-store",
     });
-    res.end(fs.readFileSync(file));
+    res.end(body);
   });
   return new Promise((resolve, reject) => {
     server.on("error", reject);
