@@ -354,6 +354,7 @@ let ctx = null, streamDest = null, audioEl = null;
 let sources = [], chunks = [], envelope = [];
 let t0 = 0, scheduleT = 0, totalDur = 0, sentDone = 0, sentTotal = 1;
 let aborted = false, wavURL = null, rafId = 0;
+let qrToken = 0; /* session fence: an orphaned generation must never touch a newer session's state */
 
 /* ---------------- small helpers ---------------- */
 const fmt = s => { s = Math.max(0, Math.floor(s)); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
@@ -383,11 +384,13 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 clearBtn.addEventListener("click", () => { textEl.value = ""; updateCount(); try { localStorage.removeItem("lantern.text"); } catch {} textEl.focus(); });
 /* voice + speed are shared between the paste view and the reader settings sheet */
 function setVoice(v) {
+  if (voiceSel.value === v && rVoice.value === v) return;
   voiceSel.value = v; rVoice.value = v;
   try { localStorage.setItem("lantern.voice", v); } catch {}
   readerSettingsChanged();
 }
 function setSpeed(s) {
+  if (s === speed) return; /* re-tapping the active speed must not restart the sentence */
   speed = s;
   for (const group of [speedsEl, rSpeeds])
     for (const c of group.children) c.classList.toggle("on", parseFloat(c.dataset.s) === s);
@@ -415,6 +418,7 @@ function loadModel() {
     dtype: "q8",
     device: "wasm",
     progress_callback: p => {
+      if (!banner.hidden && banner.classList.contains("error")) return; /* don't overwrite an import error mid-download */
       if (p.status === "progress" && p.total) {
         seen.set(p.file, { loaded: p.loaded, total: p.total });
         let loaded = 0, total = 0;
@@ -534,6 +538,11 @@ function setMediaSession(playing) {
   navigator.mediaSession.playbackState = playing ? "playing" : "paused";
   navigator.mediaSession.setActionHandler("play", () => togglePlay(true));
   navigator.mediaSession.setActionHandler("pause", () => togglePlay(false));
+  /* the reader installs sentence-skip handlers — clear them so they don't linger as dead controls */
+  try {
+    navigator.mediaSession.setActionHandler("seekbackward", null);
+    navigator.mediaSession.setActionHandler("seekforward", null);
+  } catch {}
 }
 
 /* ---------------- session control ---------------- */
@@ -563,10 +572,20 @@ function ensureAudioEl() {
   audioEl = new Audio(); audioEl.setAttribute("playsinline", ""); document.body.appendChild(audioEl);
   /* keep the icon honest in file mode — natural end, lock-screen or notification controls */
   for (const ev of ["play", "pause", "ended"]) audioEl.addEventListener(ev, () => {
-    if (mode !== "file") return;
-    const playing = !audioEl.paused && !audioEl.ended;
-    setPlayIcon(playing);
-    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = playing ? "playing" : "paused";
+    if (mode === "file") {
+      const playing = !audioEl.paused && !audioEl.ended;
+      setPlayIcon(playing);
+      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = playing ? "playing" : "paused";
+      return;
+    }
+    /* the OS can pause the routed element directly (lock screen, headset). The reader's
+       clock lives in the AudioContext, so mirror element pauses into the engine or the
+       highlight would keep advancing silently. */
+    if (rd.book && rd.started) {
+      if (ev === "pause" && rd.playing && !audioEl.srcObject) return; /* teardown path */
+      if (ev === "pause" && rd.playing) readerToggle(false);
+      else if (ev === "play" && !rd.playing) readerToggle(true);
+    }
   });
 }
 
@@ -627,6 +646,7 @@ readBtn.addEventListener("click", async () => {
 
   if (!banner.hidden && banner.classList.contains("error")) hideBanner(); /* stale error from a previous attempt */
   resetSession();
+  const myToken = ++qrToken;
   mode = "generating";
   readBtn.textContent = "Stop reading";
   readBtn.classList.add("stopping", "working");
@@ -655,11 +675,13 @@ readBtn.addEventListener("click", async () => {
 
   try { await loadModel(); }
   catch {
+    if (myToken !== qrToken) return; /* superseded — a newer session owns the shared state now */
     readBtn.textContent = "Read aloud"; readBtn.classList.remove("stopping", "working");
     mode = "idle"; player.hidden = true;
     resetSession(); /* closes the AudioContext — iOS caps live contexts, so a failed attempt must not leak one */
     return;
   }
+  if (myToken !== qrToken) return; /* view switched away during the download — never touch the shared audio element */
   if (aborted) { /* Stop was pressed while the model was still downloading */
     readBtn.textContent = "Read aloud"; readBtn.classList.remove("stopping", "working");
     mode = "idle"; player.hidden = true; resetSession();
@@ -677,6 +699,7 @@ readBtn.addEventListener("click", async () => {
   let streamFailed = false;
   try {
     for await (const { audio } of stream) {
+      if (myToken !== qrToken) return; /* a newer session owns ctx/chunks — do not interleave into it */
       if (aborted) break;
       const f32 = audio.audio;
       if (!f32 || !f32.length) continue; /* a sentence can synthesize to nothing — skip it, createBuffer(1, 0) would throw */
@@ -700,7 +723,7 @@ readBtn.addEventListener("click", async () => {
   }
 
   /* the session may have been torn down externally (view switch) — don't touch shared state */
-  if (mode !== "generating") return;
+  if (myToken !== qrToken || mode !== "generating") return;
 
   readBtn.textContent = "Read aloud";
   readBtn.classList.remove("stopping", "working");
@@ -733,8 +756,9 @@ document.addEventListener("visibilitychange", () => { if (mode === "file" && aud
 /* stop the paste-view session when leaving that view */
 function stopQuickRead() {
   if (mode === "idle") return;
-  aborted = true;
+  qrToken++; /* fence out the in-flight session before touching anything */
   resetSession();
+  aborted = true; /* AFTER resetSession — it resets the flag, which would leave the stream running */
   mode = "idle";
   player.hidden = true;
   readBtn.textContent = "Read aloud";
@@ -747,7 +771,7 @@ function stopQuickRead() {
 let dbPromise = null;
 function openDB() {
   if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
+  const p = new Promise((resolve, reject) => {
     const req = indexedDB.open("lantern-books", 1);
     req.onupgradeneeded = () => {
       const db = req.result;
@@ -757,7 +781,9 @@ function openDB() {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
-  return dbPromise;
+  p.catch(() => { if (dbPromise === p) dbPromise = null; }); /* a failed open must stay retryable */
+  dbPromise = p;
+  return p;
 }
 function idb(store, dbMode, fn) {
   return openDB().then(db => new Promise((resolve, reject) => {
@@ -784,7 +810,9 @@ const dbAllProgress = () => idb("progress", "readonly", s => s.getAll());
    ================================================================ */
 const dirOf = p => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 function joinPath(dir, href) {
-  const segs = (dir ? dir.split("/") : []).concat(decodeURIComponent(href.split("#")[0].split("?")[0]).split("/"));
+  let clean = href.split("#")[0].split("?")[0];
+  try { clean = decodeURIComponent(clean); } catch {} /* a raw % in an href must not kill the import */
+  const segs = (dir ? dir.split("/") : []).concat(clean.split("/"));
   const out = [];
   for (const s of segs) {
     if (!s || s === ".") continue;
@@ -800,7 +828,23 @@ function parseEpub(arrayBuf) {
   let zip;
   try { zip = unzipSync(new Uint8Array(arrayBuf)); } catch { throw new Error("not a zip archive"); }
   const textOf = p => { const f = zip[p]; if (!f) throw new Error("missing " + p); return strFromU8(f); };
-  const parse = (s, type) => new DOMParser().parseFromString(s, type || "application/xml");
+  const parse = (s, type) => {
+    const doc = new DOMParser().parseFromString(s, type || "application/xml");
+    /* DOMParser reports XML failures as a parsererror document, it never throws */
+    if (type !== "text/html" && doc.getElementsByTagName("parsererror").length) throw new Error("malformed XML");
+    return doc;
+  };
+
+  /* DRM: encrypted content files can't be read — font obfuscation alone is fine */
+  if (zip["META-INF/encryption.xml"]) {
+    let drm = false;
+    try {
+      const enc = parse(textOf("META-INF/encryption.xml"));
+      const refs = [...enc.getElementsByTagNameNS("*", "CipherReference")];
+      drm = refs.some(r => !/\.(ttf|otf|woff2?)$/i.test(r.getAttribute("URI") || ""));
+    } catch { drm = true; }
+    if (drm) throw new Error("DRM-protected");
+  }
 
   const container = parse(textOf("META-INF/container.xml"));
   const rootfile = container.querySelector("rootfile");
@@ -809,12 +853,10 @@ function parseEpub(arrayBuf) {
   const opfDir = dirOf(opfPath);
   const opf = parse(textOf(opfPath));
 
-  const dc = ln => {
-    const el = opf.getElementsByTagNameNS("http://purl.org/dc/elements/1.1/", ln)[0];
-    return el ? el.textContent.replace(/\s+/g, " ").trim() : "";
-  };
-  const title = dc("title") || "Untitled";
-  const author = dc("creator") || "";
+  const dc = ln => [...opf.getElementsByTagNameNS("http://purl.org/dc/elements/1.1/", ln)]
+    .map(el => el.textContent.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const title = dc("title")[0] || "Untitled";
+  const author = dc("creator").join(", ");
 
   const manifest = new Map();
   for (const it of opf.querySelectorAll("manifest > item"))
@@ -831,62 +873,70 @@ function parseEpub(arrayBuf) {
     const metaCover = opf.querySelector('meta[name="cover"]');
     if (metaCover) coverItem = manifest.get(metaCover.getAttribute("content"));
   }
-  if (coverItem) {
+  if (coverItem && /^image\//.test(coverItem.type || "")) { /* EPUB2 meta covers sometimes point at an XHTML page */
     const data = zip[joinPath(opfDir, coverItem.href)];
-    if (data) cover = new Blob([data], { type: coverItem.type || "image/jpeg" });
+    if (data) cover = new Blob([data], { type: coverItem.type });
   }
 
-  /* chapter labels: EPUB3 nav doc, else the EPUB2 NCX */
+  /* chapter labels: EPUB3 nav doc, else the EPUB2 NCX — label problems never block an import */
   const tocLabels = new Map();
-  const navItem = [...manifest.values()].find(m => m.props.includes("nav"));
-  if (navItem && zip[joinPath(opfDir, navItem.href)]) {
-    const navPath = joinPath(opfDir, navItem.href);
-    const navDoc = parse(textOf(navPath), "text/html");
-    for (const a of navDoc.querySelectorAll("nav a[href]")) {
-      const label = a.textContent.replace(/\s+/g, " ").trim();
-      if (label) tocLabels.set(joinPath(dirOf(navPath), a.getAttribute("href")), label);
-    }
-  } else {
-    const ncxId = opf.querySelector("spine") && opf.querySelector("spine").getAttribute("toc");
-    const ncxItem = ncxId && manifest.get(ncxId);
-    if (ncxItem && zip[joinPath(opfDir, ncxItem.href)]) {
-      const ncxPath = joinPath(opfDir, ncxItem.href);
-      const ncxDoc = parse(textOf(ncxPath));
-      for (const np of ncxDoc.getElementsByTagName("navPoint")) {
-        const lbl = np.getElementsByTagName("text")[0], src = np.getElementsByTagName("content")[0];
-        if (lbl && src) {
-          const label = lbl.textContent.replace(/\s+/g, " ").trim();
-          if (label) tocLabels.set(joinPath(dirOf(ncxPath), src.getAttribute("src")), label);
+  try {
+    const navItem = [...manifest.values()].find(m => m.props.includes("nav"));
+    if (navItem && zip[joinPath(opfDir, navItem.href)]) {
+      const navPath = joinPath(opfDir, navItem.href);
+      const navDoc = parse(textOf(navPath), "text/html");
+      /* only the toc nav — landmarks/page-list navs would corrupt chapter titles */
+      const tocNav = navDoc.querySelector('nav[epub\\:type="toc"]') || navDoc.querySelector("nav");
+      for (const a of tocNav ? tocNav.querySelectorAll("a[href]") : []) {
+        const label = a.textContent.replace(/\s+/g, " ").trim();
+        const href = a.getAttribute("href");
+        if (label && href) tocLabels.set(joinPath(dirOf(navPath), href), label);
+      }
+    } else {
+      const ncxId = opf.querySelector("spine") && opf.querySelector("spine").getAttribute("toc");
+      const ncxItem = ncxId && manifest.get(ncxId);
+      if (ncxItem && zip[joinPath(opfDir, ncxItem.href)]) {
+        const ncxPath = joinPath(opfDir, ncxItem.href);
+        const ncxDoc = parse(textOf(ncxPath));
+        for (const np of ncxDoc.getElementsByTagNameNS("*", "navPoint")) {
+          const lbl = np.getElementsByTagNameNS("*", "text")[0], src = np.getElementsByTagNameNS("*", "content")[0];
+          const srcAttr = src && src.getAttribute("src");
+          if (lbl && srcAttr) {
+            const label = lbl.textContent.replace(/\s+/g, " ").trim();
+            if (label) tocLabels.set(joinPath(dirOf(ncxPath), srcAttr), label);
+          }
         }
       }
     }
-  }
+  } catch {}
 
-  const BLOCKS = "p,h1,h2,h3,h4,h5,h6,blockquote,li,figcaption,dt,dd,pre";
+  /* text extraction: walk leaf blocks so <div>-marked-up books keep all their text;
+     inline runs directly inside a container become their own paragraph */
+  const BLOCK_TAGS = new Set(["ADDRESS","ARTICLE","ASIDE","BLOCKQUOTE","BODY","DD","DETAILS","DIV","DL","DT","FIELDSET","FIGCAPTION","FIGURE","FOOTER","FORM","H1","H2","H3","H4","H5","H6","HEADER","HGROUP","HR","LI","MAIN","NAV","OL","P","PRE","SECTION","TABLE","TBODY","TD","TFOOT","TH","THEAD","TR","UL"]);
+  const collectBlocks = (el, out) => {
+    let buf = "";
+    const flush = () => { const t = buf.replace(/\s+/g, " ").trim(); if (t) out.push(t); buf = ""; };
+    for (const node of el.childNodes) {
+      if (node.nodeType === 1 && BLOCK_TAGS.has(node.tagName)) { flush(); collectBlocks(node, out); }
+      else if (node.nodeType === 1 && (node.tagName === "SCRIPT" || node.tagName === "STYLE")) continue;
+      else buf += node.textContent;
+    }
+    flush();
+  };
+
   const chapters = [];
   for (const ref of opf.querySelectorAll("spine > itemref")) {
     if ((ref.getAttribute("linear") || "yes") === "no") continue;
     const item = manifest.get(ref.getAttribute("idref"));
-    if (!item || !/html/.test(item.type)) continue;
+    if (!item) continue;
+    if (item.type && !/html|oeb/i.test(item.type)) continue; /* old EPUB2 books use text/x-oeb1-document */
     if (item.props.includes("nav")) continue;
     const path = joinPath(opfDir, item.href);
     if (!zip[path]) continue;
     const doc = parse(textOf(path), "text/html");
     if (!doc.body) continue;
-    const picked = new Set();
     const paragraphs = [];
-    for (const el of doc.body.querySelectorAll(BLOCKS)) {
-      let nested = false;
-      for (let a = el.parentElement; a; a = a.parentElement) if (picked.has(a)) { nested = true; break; }
-      if (nested) continue;
-      picked.add(el);
-      const t = el.textContent.replace(/\s+/g, " ").trim();
-      if (t) paragraphs.push(t);
-    }
-    if (!paragraphs.length) {
-      const t = doc.body.textContent.replace(/\s+/g, " ").trim();
-      if (t) paragraphs.push(t);
-    }
+    collectBlocks(doc.body, paragraphs);
     if (!paragraphs.length) continue;
     const h = doc.body.querySelector("h1,h2,h3");
     chapters.push({
@@ -903,7 +953,15 @@ function parseEpub(arrayBuf) {
    ================================================================ */
 let coverURLs = [];
 async function renderLibrary() {
-  const [books, progress] = await Promise.all([dbAllBooks(), dbAllProgress()]);
+  let books, progress;
+  try { [books, progress] = await Promise.all([dbAllBooks(), dbAllProgress()]); }
+  catch (err) {
+    console.error(err);
+    shelf.innerHTML = "";
+    libEmpty.hidden = false;
+    libEmpty.textContent = "Couldn't open Lantern's book storage. Private browsing can block it — try a normal window.";
+    return;
+  }
   const pmap = new Map(progress.map(p => [p.bookId, p]));
   for (const u of coverURLs) URL.revokeObjectURL(u);
   coverURLs = [];
@@ -965,16 +1023,27 @@ bookFile.addEventListener("change", async () => {
   if (!f) return;
   addBookBtn.disabled = true; addBookBtn.textContent = "Adding…";
   try {
-    const parsed = parseEpub(await f.arrayBuffer());
+    let parsed;
+    try { parsed = parseEpub(await f.arrayBuffer()); }
+    catch (err) {
+      console.error(err);
+      showBanner(String(err && err.message).includes("DRM")
+        ? `<b>This EPUB is DRM-protected.</b> Lantern can only read DRM-free books.`
+        : `<b>Couldn't open that EPUB.</b> The file may be corrupted or in a format Lantern doesn't understand.`, { error: true });
+      return;
+    }
     const id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(36).slice(2));
-    await dbPutBook({ id, addedAt: Date.now(), ...parsed });
+    try { await dbPutBook({ id, addedAt: Date.now(), ...parsed }); }
+    catch (err) {
+      console.error(err);
+      showBanner(`<b>Couldn't save the book.</b> Device storage may be full — free some space and try again.`, { error: true });
+      return;
+    }
     if (!banner.hidden && banner.classList.contains("error")) hideBanner();
     await renderLibrary();
-  } catch (err) {
-    console.error(err);
-    showBanner(`<b>Couldn't open that EPUB.</b> The file may be corrupted or DRM-protected — Lantern can only read DRM-free books.`, { error: true });
+  } finally {
+    addBookBtn.disabled = false; addBookBtn.textContent = "Add a book · EPUB";
   }
-  addBookBtn.disabled = false; addBookBtn.textContent = "Add a book · EPUB";
 });
 
 /* ================================================================
@@ -984,7 +1053,7 @@ const rd = {
   book: null, ch: 0, si: 0, hl: -1, sentences: [],
   token: 0, playing: false, started: false, genDone: false,
   ctx: null, dest: null, sources: [], timings: [], scheduleT: 0, t0: 0,
-  cache: new Map(), raf: 0, userScrollAt: 0, progScroll: false,
+  cache: new Map(), raf: 0, userScrollAt: 0, progScroll: false, pump: null,
 };
 let curSentEl = null;
 
@@ -1059,6 +1128,7 @@ function renderChapter() {
   }
   rContent.innerHTML = "";
   rContent.appendChild(frag);
+  if (!tocSheet.hidden) buildToc(); /* keep an open chapter list in step with auto-advance */
   updateReaderStatus();
 }
 
@@ -1070,17 +1140,19 @@ function highlightSentence(si, { scroll = true, force = false } = {}) {
     curSentEl.classList.add("speaking");
     const recentUserScroll = performance.now() - rd.userScrollAt < 4000;
     if (scroll && (force || !recentUserScroll)) {
+      /* instant, not smooth: a smooth scroll emits trailing scroll events past any
+         fixed flag window, which would be misread as the user scrolling and
+         permanently suppress the follow-along */
       rd.progScroll = true;
-      curSentEl.scrollIntoView({ block: "center", behavior: "smooth" });
-      setTimeout(() => { rd.progScroll = false; }, 700);
+      curSentEl.scrollIntoView({ block: "center" });
+      requestAnimationFrame(() => requestAnimationFrame(() => { rd.progScroll = false; }));
     }
   }
   updateReaderStatus();
 }
 rScroll.addEventListener("scroll", () => { if (!rd.progScroll) rd.userScrollAt = performance.now(); }, { passive: true });
 
-function readerTick() {
-  rd.raf = requestAnimationFrame(readerTick);
+function syncFromClock() {
   if (!rd.ctx || !rd.timings.length) return;
   const ct = rd.ctx.currentTime;
   let active = null;
@@ -1094,13 +1166,28 @@ function readerTick() {
     saveReaderProgress();
   }
 }
+function readerTick() {
+  rd.raf = requestAnimationFrame(readerTick);
+  syncFromClock();
+}
+/* rAF is frozen while the screen is locked, but audio (and its clock) keep going —
+   a slow timer keeps the saved position honest for background listening */
+setInterval(() => { if (rd.book && rd.started && document.hidden) syncFromClock(); }, 5000);
 
 async function ensureReaderAudio() {
   if (!rd.ctx || rd.ctx.state === "closed") {
-    rd.ctx = new (window.AudioContext || window.webkitAudioContext)();
-    rd.dest = rd.ctx.createMediaStreamDestination();
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    rd.ctx = ctx;
+    rd.dest = ctx.createMediaStreamDestination();
+    ctx.onstatechange = () => { /* iOS interruptions (calls, Siri) — keep icon and state honest */
+      if (rd.ctx !== ctx || !rd.book || !rd.started) return;
+      const running = ctx.state === "running";
+      rd.playing = running;
+      setReaderIcon(running ? "pause" : "play");
+    };
   }
   try { await rd.ctx.resume(); } catch {}
+  if (!rd.ctx || !rd.dest) return; /* torn down while resuming */
   ensureAudioEl();
   audioEl.removeAttribute("src");
   audioEl.srcObject = rd.dest.stream;
@@ -1132,13 +1219,21 @@ async function readerPlayFrom(si) {
   const myToken = rd.token;
   rd.playing = true; rd.started = true;
   setReaderIcon("busy");
+  /* serialize pumps: an abandoned pump may still have one tts.generate in flight —
+     wait it out so the WASM session never runs concurrent inferences */
+  const prevPump = rd.pump;
+  rd.pump = (async () => {
+  await Promise.resolve(prevPump).catch(() => {});
+  if (myToken !== rd.token) return;
   await ensureReaderAudio();
+  if (myToken !== rd.token) return;
   try { await loadModel(); }
   catch { if (myToken === rd.token) { rd.playing = false; rd.started = false; setReaderIcon("play"); } return; }
   if (myToken !== rd.token) return;
 
-  setReaderIcon("pause");
-  setReaderMediaSession(true);
+  if (!banner.hidden && banner.classList.contains("error")) hideBanner();
+  setReaderIcon(rd.playing ? "pause" : "play"); /* a pause tap during the awaits must stick */
+  setReaderMediaSession(rd.playing);
   cancelAnimationFrame(rd.raf);
   readerTick();
   highlightSentence(si, { force: true });
@@ -1147,6 +1242,12 @@ async function readerPlayFrom(si) {
   const chAtStart = rd.ch;
   let genFailed = false;
   for (let i = si; i < rd.sentences.length; i++) {
+    /* backpressure: stay ~90 s of audio ahead of the clock, no further — a
+       book-length chapter must not pile hundreds of MB of PCM into memory */
+    while (rd.t0 && rd.scheduleT - rd.ctx.currentTime > 90) {
+      await new Promise(r => setTimeout(r, 250));
+      if (myToken !== rd.token) return;
+    }
     const key = `${chAtStart}:${i}:${voiceSel.value}:${speed}`;
     let f32 = rd.cache.get(key);
     if (f32 === undefined) {
@@ -1163,6 +1264,8 @@ async function readerPlayFrom(si) {
       }
       f32 = out.audio;
       rd.cache.set(key, f32);
+      /* bounded cache: recent sentences only — enough for instant back-skips */
+      if (rd.cache.size > 48) rd.cache.delete(rd.cache.keys().next().value);
     }
     if (myToken !== rd.token) return;
     if (!f32 || !f32.length) continue; /* a sentence can synthesize to nothing */
@@ -1182,8 +1285,10 @@ async function readerPlayFrom(si) {
   updateReaderStatus();
   /* when playback drains: next chapter — unless synthesis failed, which must never
      skip the rest of a chapter; the reader parks so a tap can retry from there */
+  let finished = false;
   const finish = () => {
-    if (myToken !== rd.token) return;
+    if (finished || myToken !== rd.token) return;
+    finished = true;
     if (genFailed) {
       rd.playing = false; rd.started = false;
       setReaderIcon("play");
@@ -1191,8 +1296,12 @@ async function readerPlayFrom(si) {
     } else readerChapterDone();
   };
   const last = rd.sources[rd.sources.length - 1];
-  if (last) last.onended = finish;
-  else finish();
+  if (last) {
+    last.onended = finish;
+    /* the final buffer can drain before the handler is attached */
+    if (rd.ctx.state === "running" && rd.ctx.currentTime >= rd.scheduleT - 0.01) finish();
+  } else finish();
+  })();
 }
 
 function readerChapterDone() {
@@ -1206,6 +1315,7 @@ function readerChapterDone() {
   } else {
     rd.playing = false;
     rd.started = false; /* so the next play tap starts a fresh run instead of toggling a drained context */
+    rd.si = rd.sentences.length; /* counts as 100% on the shelf */
     setReaderIcon("play");
     updateReaderStatus("the end");
     saveReaderProgress();
@@ -1215,7 +1325,11 @@ function readerChapterDone() {
 
 function readerToggle(force) {
   if (!rd.book) return;
-  if (!rd.started || !rd.ctx || rd.ctx.state === "closed") { readerPlayFrom(rd.si || 0); return; }
+  if (!rd.started || !rd.ctx || rd.ctx.state === "closed") {
+    if (force === false) return; /* a "pause" while parked must never start playback */
+    readerPlayFrom(rd.si >= rd.sentences.length ? 0 : (rd.si || 0)); /* after "the end", restart the chapter */
+    return;
+  }
   const wantPlay = force !== undefined ? force : rd.ctx.state !== "running";
   if (wantPlay) { rd.ctx.resume(); if (audioEl) audioEl.play().catch(() => {}); }
   else { rd.ctx.suspend(); saveReaderProgress(); }
@@ -1241,7 +1355,9 @@ function readerSkip(d) {
 
 function readerSettingsChanged() {
   rd.cache.clear();
-  if (rd.book && rd.started && rd.playing) readerPlayFrom(rd.si);
+  if (!rd.book || !rd.started) return;
+  if (rd.playing) readerPlayFrom(rd.si);
+  else { readerStopPlayback(); rd.started = false; } /* park: the old voice is already scheduled — resume restarts with the new one */
 }
 
 rPlay.addEventListener("click", () => readerToggle());
@@ -1302,16 +1418,20 @@ for (const c of rSpeeds.children) c.classList.toggle("on", parseFloat(c.dataset.
 
 /* ---------------- open a book ---------------- */
 async function openReader(id) {
-  let book = null;
+  const wantHash = location.hash;
+  /* fetch everything BEFORE touching reader state: an await between rd.book and
+     rd.ch/rd.si would let a navigation-triggered teardown save one book's
+     position into another book's progress row */
+  let book = null, prog = null;
   try { book = await dbGetBook(id); } catch {}
-  if (!book) { location.hash = "#library"; return; }
+  if (book) { try { prog = await dbGetProgress(id); } catch {} }
+  if (location.hash !== wantHash) return; /* user navigated away while loading */
+  if (!book) { location.replace("#library"); return; } /* replace: no history trap on dead deep links */
   stopQuickRead();
   if (rd.book && rd.book.id !== id) readerTeardown();
   showView("reader");
   if (rd.book && rd.book.id === id) return; /* same book already open — keep playing */
   rd.book = book;
-  let prog = null;
-  try { prog = await dbGetProgress(id); } catch {}
   rd.ch = Math.min((prog && prog.ch) || 0, book.chapters.length - 1);
   renderChapter();
   const si = Math.min((prog && prog.si) || 0, Math.max(0, rd.sentences.length - 1));

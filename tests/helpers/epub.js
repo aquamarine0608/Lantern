@@ -21,22 +21,29 @@ const DEFAULT_CHAPTERS = [
   },
 ];
 
-const xhtml = (title, paras) => `<?xml version="1.0" encoding="utf-8"?>
+const xhtml = (title, paras, divs = false) => `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml"><head><title>${title}</title></head>
-<body><h2>${title}</h2>
-${paras.map((p) => `<p>${p}</p>`).join("\n")}
+<body>${divs
+  ? `<div class="chapter"><div class="heading">${title}</div>\n${paras.map((p) => `<div class="para">${p}</div>`).join("\n")}</div>`
+  : `<h2>${title}</h2>\n${paras.map((p) => `<p>${p}</p>`).join("\n")}`}
 </body></html>`;
 
-function makeEpub({ title = "The Test Book", author = "Ada Author", chapters = DEFAULT_CHAPTERS, cover = true } = {}) {
+function makeEpub({ title = "The Test Book", author = "Ada Author", creators, chapters = DEFAULT_CHAPTERS, cover = true, divs = false, encryption } = {}) {
   const files = {};
   const manifest = [];
   const spine = [];
   chapters.forEach((c, i) => {
-    files[`OEBPS/ch${i + 1}.xhtml`] = strToU8(xhtml(c.title, c.paras));
+    files[`OEBPS/ch${i + 1}.xhtml`] = strToU8(xhtml(c.title, c.paras, divs));
     manifest.push(`<item id="c${i + 1}" href="ch${i + 1}.xhtml" media-type="application/xhtml+xml"/>`);
     spine.push(`<itemref idref="c${i + 1}"/>`);
   });
+  if (encryption) {
+    files["META-INF/encryption.xml"] = strToU8(`<?xml version="1.0"?>
+<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+  <enc:EncryptedData><enc:CipherData><enc:CipherReference URI="${encryption}"/></enc:CipherData></enc:EncryptedData>
+</encryption>`);
+  }
 
   files["OEBPS/nav.xhtml"] = strToU8(`<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
@@ -53,7 +60,7 @@ ${chapters.map((c, i) => `<li><a href="ch${i + 1}.xhtml">${c.title}</a></li>`).j
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="uid">lantern-test-book</dc:identifier>
     <dc:title>${title}</dc:title>
-    <dc:creator>${author}</dc:creator>
+    ${(creators || [author]).map((c) => `<dc:creator>${c}</dc:creator>`).join("\n    ")}
     <dc:language>en</dc:language>
   </metadata>
   <manifest>

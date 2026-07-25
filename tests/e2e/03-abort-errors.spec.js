@@ -96,6 +96,38 @@ test.describe("stopping and error paths", () => {
     expect(Math.abs(duration - 1.0)).toBeLessThan(0.1); // the two non-empty sentences
   });
 
+  test("leaving the paste view mid-generation aborts cleanly with no stray error", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 400, chunkSeconds: 0.5 });
+    await page.goto("/#paste");
+    await startRead(page, LONG_TEXT);
+    await expect(page.locator("#statusLine")).toContainText(/sentence/, { timeout: 15_000 });
+    await page.click("#pasteBackBtn"); // navigate away while the stream is running
+    await expect(page.locator("#addBookBtn")).toBeVisible();
+    await page.waitForTimeout(1500); // give a zombie stream time to misbehave, if it were going to
+    await expect(page.locator("#banner")).toBeHidden();
+
+    // and the paste view is immediately reusable
+    await page.click("#pasteModeBtn");
+    await expect(page.locator("#readBtn")).toHaveText("Read aloud");
+    await startRead(page);
+    await waitForFileMode(page);
+  });
+
+  test("an orphaned paste session can never interleave into a new one", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 600, chunkSeconds: 0.5 });
+    await page.goto("/#paste");
+    await startRead(page, LONG_TEXT); // eight sentences, one every 600 ms
+    await expect(page.locator("#statusLine")).toContainText(/sentence/, { timeout: 15_000 });
+    await page.click("#pasteBackBtn"); // orphan the session mid-stream
+    await expect(page.locator("#addBookBtn")).toBeVisible();
+    await page.click("#pasteModeBtn"); // come straight back before the orphan's next chunk lands
+    await startRead(page, "Short new text here. Just two sentences.");
+    await waitForFileMode(page);
+    await expect(page.locator("#statusLine")).toContainText("2 sentences");
+    const duration = await page.evaluate(() => document.querySelector("audio").duration);
+    expect(Math.abs(duration - 1.0)).toBeLessThan(0.1); // only the new text — nothing interleaved
+  });
+
   test("starting a new read from file mode resets the previous session cleanly", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.goto("/#paste");

@@ -1,4 +1,4 @@
-const { test, expect } = require("../helpers/fixtures");
+const { test, expect, startRead } = require("../helpers/fixtures");
 const { importEpub } = require("../helpers/epub");
 const { setAppOffline, setCdnOffline } = require("../helpers/net");
 
@@ -128,6 +128,20 @@ test.describe("reading books aloud", () => {
     await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBe(5);
   });
 
+  test("an OS-level pause of the audio element pauses the reader engine too", async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS, { chunkSeconds: 1.5 });
+    await page.click("#rPlay");
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBe(0);
+    // lock screens and headsets pause the element directly, not through our UI
+    await page.evaluate(() => document.querySelector("audio").pause());
+    await expect(page.locator("#rIconPlay")).toBeVisible();
+    const before = await speakingSi(page);
+    await page.waitForTimeout(1200);
+    expect(await speakingSi(page)).toBe(before); // the highlight must not advance silently
+    await page.click("#rPlay");
+    await expect(page.locator("#rIconPause")).toBeVisible();
+  });
+
   test("changing the speed mid-reading keeps playing without errors", async ({ page, mockTTS }) => {
     await openBookReady(page, mockTTS, { chunkSeconds: 1.0 });
     await page.click("#rPlay");
@@ -136,6 +150,24 @@ test.describe("reading books aloud", () => {
     await page.click('#rSpeeds button[data-s="1.5"]');
     await page.click("#sheetBackdrop");
     await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(0);
+    await expect(page.locator("#rIconPause")).toBeVisible();
+  });
+
+  test("a paste session orphaned during the model download can't kill a book's audio", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 2500, chunkDelay: 50, chunkSeconds: 1.0 });
+    await page.goto("/");
+    await importEpub(page);
+    await page.click("#pasteModeBtn");
+    await startRead(page); // parks on the 2.5 s model download
+    await expect(page.locator("#readBtn")).toHaveText("Stop reading");
+    await page.click("#pasteBackBtn"); // orphan it mid-download
+    await page.click(".book");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await page.click("#rPlay"); // the reader shares the same in-flight model promise
+    await expect.poll(() => speakingSi(page), { timeout: 20_000 }).toBeGreaterThanOrEqual(0);
+    await page.waitForTimeout(1500); // well past the orphan's wake-up
+    // the orphan's cleanup must not have detached the reader's audio route
+    expect(await page.evaluate(() => !!document.querySelector("audio").srcObject)).toBe(true);
     await expect(page.locator("#rIconPause")).toBeVisible();
   });
 

@@ -23,7 +23,14 @@ self.addEventListener("install", (e) => {
       caches.open(CDN).then((c) =>
         Promise.all(
           CDN_PRECACHE.map((u) =>
-            c.match(u).then((hit) => hit || fetch(u).then((res) => { if (cacheable(res)) return c.put(u, res); }))
+            c.match(u).then((hit) =>
+              hit ||
+              // migrate from any previous versioned cache first — these URLs are pinned
+              // and immutable, and the CDN may be unreachable during an update install
+              caches.match(u).then((old) =>
+                old ? c.put(u, old) : fetch(u).then((res) => { if (cacheable(res)) return c.put(u, res); })
+              )
+            )
           )
         )
       ).catch(() => {}),

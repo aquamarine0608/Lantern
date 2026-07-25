@@ -77,6 +77,43 @@ test.describe("library", () => {
     await expect(page.locator(".sent").nth(1)).toContainText("The final chapter starts now.");
   });
 
+  test("a DRM-encrypted EPUB is rejected with a clear message; font obfuscation is not", async ({ page }) => {
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "drm.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ encryption: "OEBPS/ch1.xhtml" }), // content file encrypted -> DRM
+    });
+    await expect(page.locator("#bannerText")).toContainText("DRM");
+    await expect(page.locator(".book")).toHaveCount(0);
+
+    await page.setInputFiles("#bookFile", {
+      name: "fonts.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "Font Obfuscated", encryption: "OEBPS/fonts/serif.otf" }), // fonts only -> fine
+    });
+    await expect(page.locator(".book .b-title")).toHaveText("Font Obfuscated");
+  });
+
+  test("chapters marked up entirely with <div>s keep all their text", async ({ page }) => {
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "divs.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "Div Book", divs: true }),
+    });
+    await page.click(".book");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await expect(page.locator(".sent").nth(1)).toContainText("The first sentence opens the book.");
+    await expect(page.locator(".sent")).toHaveCount(6); // nothing dropped vs the <p> layout
+  });
+
+  test("co-authored books list every author", async ({ page }) => {
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "coauthored.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ creators: ["Ada Author", "Bo Writer"] }),
+    });
+    await expect(page.locator(".book .b-author")).toHaveText("Ada Author, Bo Writer");
+  });
+
   test("a corrupted file shows a friendly error and the shelf keeps working", async ({ page }) => {
     await page.goto("/");
     await page.setInputFiles("#bookFile", {
