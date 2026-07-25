@@ -167,6 +167,21 @@ test.describe("reading books aloud", () => {
     await expect(page.locator("#rIconPause")).toBeVisible();
   });
 
+  test("leaving the reader releases the lock-screen transport completely", async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS, { chunkSeconds: 1.0 });
+    await page.click("#rPlay");
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(0);
+    await page.click("#backBtn");
+    await expect(page.locator("#addBookBtn")).toBeVisible();
+    // a dead transport on the lock screen (title + live buttons for a closed book) is the regression
+    const ms = await page.evaluate(() => ({
+      state: navigator.mediaSession.playbackState,
+      hasMeta: navigator.mediaSession.metadata !== null,
+    }));
+    expect(ms.state).toBe("none");
+    expect(ms.hasMeta).toBe(false);
+  });
+
   test("a paste session orphaned during the model download can't kill a book's audio", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 2500, chunkDelay: 50, chunkSeconds: 1.0 });
     await page.goto("/");

@@ -53,6 +53,24 @@ test.describe("persistence across refreshes", () => {
     await waitForFileMode(page);
   });
 
+  test("without the Cache API the app never claims the model is saved on the device", async ({ page, mockTTS }) => {
+    // plain-HTTP LAN origins have no window.caches: the model cannot persist there,
+    // so "stored on this device / one time only" would be a lie and the modelReady
+    // flag would fake an instant warm load that is actually a full re-download
+    // progressSteps: 1 keeps the progress callback from overwriting the banner until 1.5 s in
+    await mockTTS({ loadDelay: 1500, progressSteps: 1, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript(() => {
+      delete Window.prototype.caches;
+      try { delete window.caches; } catch {}
+    });
+    await page.goto("/#paste");
+    await startRead(page);
+    await expect(page.locator("#bannerText")).toContainText("isn't HTTPS", { timeout: 10_000 });
+    await waitForFileMode(page);
+    const flag = await page.evaluate(() => localStorage.getItem("lantern.modelReady"));
+    expect(flag).toBeNull();
+  });
+
   test("reload mid-generation comes back to a clean idle page with the text intact", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 400, chunkSeconds: 0.5 });
     await page.goto("/#paste");

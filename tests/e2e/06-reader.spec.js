@@ -109,6 +109,40 @@ test.describe("reader view", () => {
     expect(joined.replace(/\s+/g, " ").trim().length).toBeGreaterThanOrEqual(endless.length); // and nothing was lost
   });
 
+  test("CJK text splits at 。！？ and no spaces are injected between sentences", async ({ page }) => {
+    const source = "夜が明けた。空は青かった。「行こう」と彼は言った。彼女は笑った！本当に？";
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "cjk.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "CJK Book", chapters: [{ title: "第一章", paras: [source] }] }),
+    });
+    await page.click(".book");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await expect(page.locator(".sent").first()).toBeVisible();
+    // 1 heading + 5 sentences: without the CJK terminators the whole paragraph is one giant unit
+    await expect(page.locator(".sent")).toHaveCount(6);
+    const joined = await page.evaluate(() => [...document.querySelectorAll(".sent")].map((e) => e.textContent).join(""));
+    expect(joined).toContain(source); // rejoining the spans reproduces the text byte-for-byte — no injected spaces
+  });
+
+  test("a length cut never splits a surrogate pair (emoji stays intact)", async ({ page }) => {
+    // 319 chars then an emoji: the 320-char hard cut lands exactly between its surrogates
+    const source = "a".repeat(319) + "😀" + "b".repeat(40);
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "emoji.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "Emoji Book", chapters: [{ title: "Edge", paras: [source] }] }),
+    });
+    await page.click(".book");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await expect(page.locator(".sent").first()).toBeVisible();
+    const texts = await page.evaluate(() => [...document.querySelectorAll(".sent")].map((e) => e.textContent));
+    const joined = texts.join("");
+    expect(joined).toContain("😀");
+    expect(joined).not.toContain("�");
+    for (const t of texts) expect(/[\uD800-\uDBFF]\s*$/.test(t)).toBe(false); // no span ends on a lone high surrogate
+  });
+
   test("back returns to the library", async ({ page }) => {
     await openFirstBook(page);
     await page.click("#backBtn");

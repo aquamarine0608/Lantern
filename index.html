@@ -408,6 +408,9 @@ try {
 for (const b of speedsEl.children) b.classList.toggle("on", parseFloat(b.dataset.s) === speed);
 
 const SR = 24000;
+/* the Cache API only exists in secure contexts — over plain-HTTP LAN there is
+   nowhere to persist the 90 MB model, so every "cached" claim must be gated */
+const MODEL_CACHEABLE = "caches" in window;
 let tts = null, modelLoading = null, modelLoadQuiet = false, modelBusyText = "", modelWasCached = false;
 
 /* kokoro-js fetches a voice's ~0.5 MB style vector from huggingface.co the FIRST
@@ -418,7 +421,7 @@ let tts = null, modelLoading = null, modelLoadQuiet = false, modelBusyText = "",
 const voiceBinUrl = v => `https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/voices/${v}.bin`;
 let voicePrecacheRun = null;
 function precacheVoices() {
-  if (voicePrecacheRun || !("caches" in window)) return voicePrecacheRun;
+  if (voicePrecacheRun || !MODEL_CACHEABLE) return voicePrecacheRun;
   voicePrecacheRun = (async () => {
     const cache = await caches.open("kokoro-voices");
     for (const o of voiceSel.options) { /* .options flattens the optgroups */
@@ -515,18 +518,22 @@ function loadModel(quiet) {
       modelLoadQuiet = false;
       if (banner.hidden) showBanner(modelWasCached
         ? `<b>Loading the voice model…</b> Already saved on this device — no download.`
-        : `<b>Downloading the voice model…</b> One time only.`, { bar: true });
+        : `<b>Downloading the voice model…</b>${MODEL_CACHEABLE ? " One time only." : ""}`, { bar: true });
     } else if (!quiet) modelLoadQuiet = false;
     return modelLoading;
   }
   modelLoadQuiet = !!quiet;
   let cachedBefore = false;
-  try { cachedBefore = localStorage.getItem("lantern.modelReady") === "1"; } catch {}
+  /* lantern.modelReady is only meaningful where the Cache API exists — on plain
+     HTTP the flag would claim "saved on this device" for a model that re-downloads */
+  try { cachedBefore = MODEL_CACHEABLE && localStorage.getItem("lantern.modelReady") === "1"; } catch {}
   modelWasCached = cachedBefore;
   modelBusyText = cachedBefore ? "loading voice model" : "downloading voice model";
   setModelState("busy", modelBusyText);
   const seen = new Map();
-  if (!cachedBefore && !quiet) showBanner(`<b>First run:</b> downloading the voice model (about 90 MB). It's stored on this device — after this, Lantern reads offline.`, { bar: true });
+  if (!cachedBefore && !quiet) showBanner(MODEL_CACHEABLE
+    ? `<b>First run:</b> downloading the voice model (about 90 MB). It's stored on this device — after this, Lantern reads offline.`
+    : `<b>Downloading the voice model (about 90 MB).</b> This address isn't HTTPS, so the browser can't keep the model between visits — it will download again next time. Use an HTTPS address (or localhost) to make it stick.`, { bar: true });
   modelLoading = KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
     dtype: "q8",
     device: "wasm",
@@ -540,14 +547,14 @@ function loadModel(quiet) {
         bannerFill.style.width = `${(loaded / total * 100).toFixed(1)}%`;
         bannerText.innerHTML = modelWasCached
           ? `<b>Loading voice model</b> — ${mb(loaded)} of ${mb(total)} MB from this device.`
-          : `<b>Downloading voice model</b> — ${mb(loaded)} of ${mb(total)} MB. One time only.`;
+          : `<b>Downloading voice model</b> — ${mb(loaded)} of ${mb(total)} MB.${MODEL_CACHEABLE ? " One time only." : ""}`;
       }
     },
   }).then(m => {
     tts = m;
     if (!banner.hidden && !banner.classList.contains("error")) hideBanner();
     if (engine === "kokoro") setModelState("ready", "voice model ready"); /* don't clobber the chip if the user switched engines mid-download */
-    try { localStorage.setItem("lantern.modelReady", "1"); } catch {}
+    try { if (MODEL_CACHEABLE) localStorage.setItem("lantern.modelReady", "1"); } catch {}
     precacheVoices(); /* fire-and-forget: never gate the first read on it */
     return m;
   }).catch(err => {
@@ -562,7 +569,7 @@ function loadModel(quiet) {
 }
 /* once the model has been downloaded on this device, warm it up right away
    so reading starts instantly after a refresh (pointless when a server voice is active) */
-try { if (engine === "kokoro" && localStorage.getItem("lantern.modelReady") === "1") loadModel(true).catch(() => {}); } catch {}
+try { if (engine === "kokoro" && MODEL_CACHEABLE && localStorage.getItem("lantern.modelReady") === "1") loadModel(true).catch(() => {}); } catch {}
 
 /* ================================================================
    voice engines — Kokoro on-device, or Qwen3-TTS streamed from the
@@ -835,6 +842,18 @@ function setMediaSession(playing) {
   } catch {}
 }
 
+/* an ended (not paused) session must fully release the transport: a surviving play
+   handler falls through togglePlay() into setMediaSession(true) and re-asserts
+   "playing" against a closed context forever */
+function releaseMediaSession() {
+  if (!("mediaSession" in navigator)) return;
+  navigator.mediaSession.playbackState = "paused";
+  try {
+    navigator.mediaSession.setActionHandler("play", null);
+    navigator.mediaSession.setActionHandler("pause", null);
+  } catch {}
+}
+
 /* ---------------- session control ---------------- */
 function resetSession() {
   cancelAnimationFrame(rafId);
@@ -892,6 +911,7 @@ function ensureAudioEl() {
 }
 
 function togglePlay(force) {
+  if (mode === "idle") { releaseMediaSession(); return; } /* no session — never republish a dead transport */
   /* iOS can leave the context in a non-standard "interrupted" state after a call —
      treat anything that isn't running as "tap means resume" */
   const wantPlay = force !== undefined ? force : (mode === "file" ? audioEl.paused : ctx && ctx.state !== "running");
@@ -994,7 +1014,7 @@ readBtn.addEventListener("click", async () => {
     readBtn.textContent = "Read aloud"; readBtn.classList.remove("stopping", "working");
     mode = "idle"; player.hidden = true;
     resetSession(); /* closes the AudioContext — iOS caps live contexts, so a failed attempt must not leak one */
-    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused"; /* it was set "playing" before the await */
+    releaseMediaSession(); /* it was set "playing" before the await */
     return;
   }
   if (qrWarmToken === myToken) qrWarmToken = 0;
@@ -1002,11 +1022,11 @@ readBtn.addEventListener("click", async () => {
   if (aborted) { /* Stop was pressed while the model was still downloading */
     readBtn.textContent = "Read aloud"; readBtn.classList.remove("stopping", "working");
     mode = "idle"; player.hidden = true; resetSession();
-    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+    releaseMediaSession();
     return;
   }
 
-  sentTotal = Math.max(1, (text.match(/[.!?…]+["'")\]]*\s|\n+/g) || []).length + 1);
+  sentTotal = Math.max(1, splitSentences(text).length);
   t0 = 0; scheduleT = 0; totalDur = 0;
   cancelAnimationFrame(rafId); tick();
 
@@ -1050,7 +1070,7 @@ readBtn.addEventListener("click", async () => {
      No audio at all — stopped, failed, or every chunk empty — never opens an empty player. */
   if (chunks.length === 0) {
     mode = "idle"; player.hidden = true; resetSession();
-    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+    releaseMediaSession();
     return;
   }
   if (aborted || streamFailed) { switchToFile(0, false); return; } /* the tick loop is already running — restarting it would leak a second one */
@@ -1086,16 +1106,7 @@ function stopQuickRead() {
   player.hidden = true;
   readBtn.textContent = "Read aloud";
   readBtn.classList.remove("stopping", "working");
-  /* the session is gone, not parked: without this the OS transport keeps claiming
-     "playing", and its stale play handler would fall through togglePlay() into
-     setMediaSession(true), re-asserting it against a closed context forever */
-  if ("mediaSession" in navigator) {
-    navigator.mediaSession.playbackState = "paused";
-    try {
-      navigator.mediaSession.setActionHandler("play", null);
-      navigator.mediaSession.setActionHandler("pause", null);
-    } catch {}
-  }
+  releaseMediaSession(); /* the session is gone, not parked */
 }
 
 /* ================================================================
@@ -1159,7 +1170,9 @@ function joinPath(dir, href) {
    it steps over, so "It cost 3.14 dollars." would lose "It cost 3." — decimals,
    initials (Ph.D.), URLs and missing-space-after-period artifacts are everywhere
    in real books. */
-const SENT_END_RE = /[.!?…]+[\])"'”’»]*(?=\s|$)/g;
+const SENT_END_RE = /(?:[.!?…]+[\])"'”’»]*(?=\s|$)|[。！？]+[」』）》〉】”’]*)/g;
+/* sentence ends in a CJK codepoint (incl. fullwidth forms) — no space follows it in print */
+const NO_SPACE_AFTER = /[⺀-〿぀-ヿ㐀-䶿一-鿿豈-﫿＀-｠￠-￦]$/;
 /* Kokoro's context is 510 phoneme tokens; kokoro-js tokenizes with truncation:true
    and SILENTLY drops the tail of anything longer. English phonemizes at roughly
    1.0-1.08 phonemes per character, so 320 chars leaves headroom even after
@@ -1171,11 +1184,14 @@ function splitLong(s) {
   const out = [];
   while (s.length > TTS_MAX_CHARS) {
     const win = s.slice(0, TTS_MAX_CHARS);
-    /* prefer a clause break, then any word gap; never cut inside a word */
-    let cut = Math.max(win.lastIndexOf("; "), win.lastIndexOf(": "),
-                       win.lastIndexOf("—"), win.lastIndexOf(", "));
+    /* prefer a clause break (Latin or CJK), then any word gap; never cut inside a word */
+    let cut = -1;
+    for (const b of ["; ", ": ", "—", ", ", "，", "、", "；", "：", "。", "！", "？"])
+      cut = Math.max(cut, win.lastIndexOf(b));
     if (cut < TTS_MAX_CHARS >> 1) cut = win.lastIndexOf(" ");
     cut = cut > 0 ? cut + 1 : TTS_MAX_CHARS; /* +1 keeps the punctuation on the left */
+    /* never split a surrogate pair (emoji, rare CJK): back off one unit */
+    if (cut < s.length && (s.charCodeAt(cut - 1) & 0xFC00) === 0xD800 && (s.charCodeAt(cut) & 0xFC00) === 0xDC00) cut--;
     out.push(s.slice(0, cut).trim());
     s = s.slice(cut);
   }
@@ -1467,6 +1483,19 @@ function readerTeardown() {
   rd.book = null;
   rd.emptyRun = 0; /* one book's silent chapters must not park the next book */
   curSentEl = null;
+  /* the reading is GONE, not parked: readerToggle/readerSkip bail on !rd.book, so
+     leaving the handlers registered under a "playing" transport gives the lock
+     screen live-looking buttons that do nothing, for a book no longer loaded */
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.playbackState = "none";
+    navigator.mediaSession.metadata = null;
+    try {
+      navigator.mediaSession.setActionHandler("play", null);
+      navigator.mediaSession.setActionHandler("pause", null);
+      navigator.mediaSession.setActionHandler("seekbackward", null);
+      navigator.mediaSession.setActionHandler("seekforward", null);
+    } catch {}
+  }
   closeSheets();
 }
 
@@ -1506,7 +1535,8 @@ function renderChapter() {
       const span = document.createElement("span");
       span.className = "sent";
       span.dataset.si = rd.sentences.length;
-      span.textContent = s + " ";
+      /* CJK text carries no inter-sentence spaces — injecting one breaks copy/lookup */
+      span.textContent = NO_SPACE_AFTER.test(s) ? s : s + " ";
       rd.sentences.push(s);
       p.appendChild(span);
     }
