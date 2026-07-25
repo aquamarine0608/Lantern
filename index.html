@@ -1354,7 +1354,14 @@ async function readerPlayFrom(si) {
   await ensureReaderAudio();
   if (myToken !== rd.token) return;
   try { await ensureEngineReady(); }
-  catch { if (myToken === rd.token) { rd.playing = false; rd.started = false; setReaderIcon("play"); } return; }
+  catch {
+    if (myToken === rd.token) {
+      rd.playing = false; rd.started = false;
+      setReaderIcon("play");
+      updateReaderStatus("tap play to retry"); /* never leave a stale "generating…" line behind */
+    }
+    return;
+  }
   if (myToken !== rd.token) return;
 
   if (!banner.hidden && banner.classList.contains("error")) hideBanner();

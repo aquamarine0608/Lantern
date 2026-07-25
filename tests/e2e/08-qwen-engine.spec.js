@@ -164,6 +164,32 @@ test.describe("Qwen3-TTS server engine", () => {
     expect(await page.evaluate(() => window.__TTS_LOADS)).toBe(1);
   });
 
+  test("switching to an unconfigured server mid-book parks cleanly with no stale status", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 1.5 });
+    await page.goto("/");
+    await importEpub(page);
+    await page.click(".book");
+    await page.click("#rPlay");
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBe(0);
+
+    await page.click("#fontBtn");
+    await page.click('#engineBtns button[data-e="qwen"]'); // no server URL entered
+    await page.click("#sheetBackdrop");
+
+    await expect(page.locator("#bannerText")).toContainText("Set your Qwen3-TTS server first");
+    await expect(page.locator("#rIconPlay")).toBeVisible();
+    await expect(page.locator("#rStatus")).not.toContainText("generating on-device");
+    await expect(page.locator("#rStatus")).toContainText("tap play to retry");
+
+    // configuring the server and tapping play recovers in place
+    await page.click("#fontBtn");
+    await page.fill("#qwenUrl", QWEN_URL);
+    await page.locator("#qwenUrl").blur();
+    await page.click("#sheetBackdrop");
+    await page.click("#rPlay");
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(0);
+  });
+
   test("without a server address, reading explains what to do instead of hanging", async ({ page }) => {
     await page.goto("/");
     await page.click("#libVoiceBtn");
