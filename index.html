@@ -1171,8 +1171,11 @@ function joinPath(dir, href) {
    initials (Ph.D.), URLs and missing-space-after-period artifacts are everywhere
    in real books. */
 const SENT_END_RE = /(?:[.!?…]+[\])"'”’»]*(?=\s|$)|[。！？]+[」』）》〉】”’]*)/g;
-/* sentence ends in a CJK codepoint (incl. fullwidth forms) — no space follows it in print */
-const NO_SPACE_AFTER = /[⺀-〿぀-ヿ㐀-䶿一-鿿豈-﫿＀-｠￠-￦]$/;
+/* sentence ends in a CJK codepoint (incl. fullwidth forms) — no space follows it in print.
+   Escapes, not literals: U+F900 豈 is visually identical to U+8C48 豈, and typing the wrong
+   one once silently widened the class to cover Hangul, surrogates and the whole PUA.
+   Korean is deliberately NOT here — Hangul text uses real inter-word spaces. */
+const NO_SPACE_AFTER = /[\u2E80-\u303F\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFF60\uFFE0-\uFFE6]$/;
 /* Kokoro's context is 510 phoneme tokens; kokoro-js tokenizes with truncation:true
    and SILENTLY drops the tail of anything longer. English phonemizes at roughly
    1.0-1.08 phonemes per character, so 320 chars leaves headroom even after

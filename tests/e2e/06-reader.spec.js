@@ -125,6 +125,23 @@ test.describe("reader view", () => {
     expect(joined).toContain(source); // rejoining the spans reproduces the text byte-for-byte — no injected spaces
   });
 
+  test("Korean keeps its inter-word space at a length-cut seam (Hangul is not 'no-space' CJK)", async ({ page }) => {
+    // >320 chars of spaced Hangul: the cap cuts at a space, the left span ends in a syllable,
+    // and a NO_SPACE_AFTER class that wrongly covers Hangul would glue the two spans together
+    const source = "가나다라마바사 ".repeat(50).trim();
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "korean.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "Korean Book", chapters: [{ title: "한글", paras: [source] }] }),
+    });
+    await page.click(".book");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await expect(page.locator(".sent").first()).toBeVisible();
+    const joined = await page.evaluate(() => [...document.querySelectorAll(".sent")].map((e) => e.textContent).join(""));
+    expect(joined).toContain("사 가"); // the seam keeps the word boundary
+    expect(joined).not.toContain("사가"); // never glued
+  });
+
   test("a length cut never splits a surrogate pair (emoji stays intact)", async ({ page }) => {
     // 319 chars then an emoji: the 320-char hard cut lands exactly between its surrogates
     const source = "a".repeat(319) + "😀" + "b".repeat(40);
