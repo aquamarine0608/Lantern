@@ -87,6 +87,13 @@ test.describe("service worker and offline", () => {
     await expect(page.locator("#readBtn")).toBeVisible(); // the app, not PNG bytes
   });
 
+  test("a failed CDN import on the first visit shows an actionable error, not a dead page", async ({ page }) => {
+    await setCdnOffline(true); // no service worker yet, no HTTP cache: the module import fails outright
+    await page.goto("/");
+    await expect(page.locator("#bannerText")).toContainText("couldn't finish loading", { timeout: 10_000 });
+    await expect(page.locator("#banner")).toBeVisible();
+  });
+
   test("the Google Fonts stylesheet is cached for offline use", async ({ page }) => {
     await warmUp(page);
     const fontsCached = await page.evaluate(async () => {

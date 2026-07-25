@@ -336,5 +336,7 @@ test.describe("Qwen3-TTS server engine", () => {
     await expect(page.locator("#bannerText")).toContainText("Set your Qwen3-TTS server first");
     await expect(page.locator("#readBtn")).toHaveText("Read aloud");
     await expect(page.locator("#player")).toBeHidden();
+    // the bail-out must not leave the OS transport claiming "playing"
+    expect(await page.evaluate(() => navigator.mediaSession.playbackState)).toBe("paused");
   });
 });

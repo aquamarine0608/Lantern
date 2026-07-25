@@ -337,6 +337,32 @@
   <footer>Runs entirely on this device · Kokoro-82M · English</footer>
 </div>
 
+<script>
+/* The whole app is one module whose first statements import from a CDN. If that
+   fetch fails (outage, captive portal, filtered host) the module body never runs,
+   route() never activates a view, and — since .view is display:none until .active —
+   the page renders as a dead shell with zero diagnostics. Fail loudly instead.
+   Classic script, placed before the module tag: module scripts are deferred, so
+   this listener is registered before the module graph can fail. */
+(function () {
+  function bootFailed() {
+    if (document.querySelector(".view.active")) return; /* the module ran — nothing to report */
+    var b = document.getElementById("banner"), t = document.getElementById("bannerText");
+    if (!b || !t || !b.hidden) return;
+    t.innerHTML = "<b>Lantern couldn't finish loading.</b> Part of the app is fetched from " +
+      "<span class=\"mono\">cdn.jsdelivr.net</span> and that request failed. Check your connection " +
+      "or network filter, then reload.";
+    b.classList.add("error"); b.hidden = false;
+  }
+  /* a failed module-graph fetch fires `error` at the <script> element; resource
+     error events don't bubble, so listen in the capture phase */
+  addEventListener("error", function (e) {
+    if (e.target && e.target !== window && e.target.tagName === "SCRIPT") bootFailed();
+  }, true);
+  /* watchdog: also covers a module that parses but throws mid-evaluation */
+  addEventListener("load", function () { setTimeout(bootFailed, 4000); });
+})();
+</script>
 <script type="module">
 import { KokoroTTS, TextSplitterStream } from "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
 import { unzipSync, strFromU8 } from "https://cdn.jsdelivr.net/npm/fflate@0.8.3/esm/browser.js";
@@ -391,6 +417,7 @@ let t0 = 0, scheduleT = 0, totalDur = 0, sentDone = 0, sentTotal = 1;
 let aborted = false, wavURL = null, rafId = 0;
 let qrToken = 0; /* session fence: an orphaned generation must never touch a newer session's state */
 let qrAbort = null; /* cancels in-flight server synthesis for the paste session */
+let qrWarmToken = 0; /* equals qrToken while that session is parked on ensureEngineReady() — an uncancellable model download */
 
 /* ---------------- small helpers ---------------- */
 const fmt = s => { s = Math.max(0, Math.floor(s)); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
@@ -630,7 +657,10 @@ async function* sentenceAudioStream(text, signal) {
   } else {
     const splitter = new TextSplitterStream();
     const stream = tts.stream(splitter, { voice: voiceSel.value, speed });
-    splitter.push(text); splitter.close();
+    /* feed pre-capped units — TextSplitterStream has no length cap of its own,
+       and kokoro silently truncates anything past its 510-token context */
+    for (const s of splitSentences(text)) splitter.push(s + "\n");
+    splitter.close();
     for await (const { audio } of stream) yield audio.audio;
   }
 }
@@ -854,9 +884,17 @@ function switchToFile(offset, autoplay) {
 readBtn.addEventListener("click", async () => {
   if (mode === "generating") { /* acting as Stop */
     aborted = true;
-    statusLine.textContent = "Stopping…";
     if (ctx) { try { ctx.suspend(); } catch {} } /* silence right away; the loop exits at the next chunk */
     if (qrAbort) qrAbort.abort(); /* and cancel any in-flight server request immediately */
+    if (qrWarmToken === qrToken) {
+      /* still parked on ensureEngineReady(): the kokoro download takes no signal and
+         can run for minutes — "Stopping…" would be a lie and the button a dead red
+         Stop. Tear down now; the download continues and becomes a warm cache. */
+      qrWarmToken = 0;
+      stopQuickRead();
+      return;
+    }
+    statusLine.textContent = "Stopping…";
     return;
   }
   const text = textEl.value.trim();
@@ -893,18 +931,23 @@ readBtn.addEventListener("click", async () => {
   audioEl.play().catch(() => {});
   setMediaSession(true);
 
+  qrWarmToken = myToken;
   try { await ensureEngineReady(); }
   catch {
+    if (qrWarmToken === myToken) qrWarmToken = 0;
     if (myToken !== qrToken) return; /* superseded — a newer session owns the shared state now */
     readBtn.textContent = "Read aloud"; readBtn.classList.remove("stopping", "working");
     mode = "idle"; player.hidden = true;
     resetSession(); /* closes the AudioContext — iOS caps live contexts, so a failed attempt must not leak one */
+    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused"; /* it was set "playing" before the await */
     return;
   }
+  if (qrWarmToken === myToken) qrWarmToken = 0;
   if (myToken !== qrToken) return; /* view switched away during the download — never touch the shared audio element */
   if (aborted) { /* Stop was pressed while the model was still downloading */
     readBtn.textContent = "Read aloud"; readBtn.classList.remove("stopping", "working");
     mode = "idle"; player.hidden = true; resetSession();
+    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
     return;
   }
 
@@ -950,7 +993,11 @@ readBtn.addEventListener("click", async () => {
 
   /* a failed stream is handled like a stop: keep whatever audio exists, otherwise back to idle.
      No audio at all — stopped, failed, or every chunk empty — never opens an empty player. */
-  if (chunks.length === 0) { mode = "idle"; player.hidden = true; resetSession(); return; }
+  if (chunks.length === 0) {
+    mode = "idle"; player.hidden = true; resetSession();
+    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+    return;
+  }
   if (aborted || streamFailed) { switchToFile(0, false); return; } /* the tick loop is already running — restarting it would leak a second one */
 
   mode = "done-live";
@@ -1048,6 +1095,28 @@ function joinPath(dir, href) {
    initials (Ph.D.), URLs and missing-space-after-period artifacts are everywhere
    in real books. */
 const SENT_END_RE = /[.!?…]+[\])"'”’»]*(?=\s|$)/g;
+/* Kokoro's context is 510 phoneme tokens; kokoro-js tokenizes with truncation:true
+   and SILENTLY drops the tail of anything longer. English phonemizes at roughly
+   1.0-1.08 phonemes per character, so 320 chars leaves headroom even after
+   number/currency expansion. Real prose blows past the limit routinely — long
+   semicolon-spliced sentences, and <br>-joined blocks with no terminators. */
+const TTS_MAX_CHARS = 320;
+function splitLong(s) {
+  if (s.length <= TTS_MAX_CHARS) return [s];
+  const out = [];
+  while (s.length > TTS_MAX_CHARS) {
+    const win = s.slice(0, TTS_MAX_CHARS);
+    /* prefer a clause break, then any word gap; never cut inside a word */
+    let cut = Math.max(win.lastIndexOf("; "), win.lastIndexOf(": "),
+                       win.lastIndexOf("—"), win.lastIndexOf(", "));
+    if (cut < TTS_MAX_CHARS >> 1) cut = win.lastIndexOf(" ");
+    cut = cut > 0 ? cut + 1 : TTS_MAX_CHARS; /* +1 keeps the punctuation on the left */
+    out.push(s.slice(0, cut).trim());
+    s = s.slice(cut);
+  }
+  if (s.trim()) out.push(s.trim());
+  return out.filter(Boolean);
+}
 const splitSentences = text => {
   const out = [];
   let last = 0, m;
@@ -1058,7 +1127,7 @@ const splitSentences = text => {
     last = end;
   }
   if (last < text.length) out.push(text.slice(last)); /* trailing text with no terminator */
-  return out.map(s => s.trim()).filter(Boolean);
+  return out.flatMap(s => splitLong(s.trim())).filter(Boolean);
 };
 
 function parseEpub(arrayBuf) {
@@ -1150,6 +1219,17 @@ function parseEpub(arrayBuf) {
   /* text extraction: walk leaf blocks so <div>-marked-up books keep all their text;
      inline runs directly inside a container become their own paragraph */
   const BLOCK_TAGS = new Set(["ADDRESS","ARTICLE","ASIDE","BLOCKQUOTE","BODY","DD","DETAILS","DIV","DL","DT","FIELDSET","FIGCAPTION","FIGURE","FOOTER","FORM","H1","H2","H3","H4","H5","H6","HEADER","HGROUP","HR","LI","MAIN","NAV","OL","P","PRE","SECTION","TABLE","TBODY","TD","TFOOT","TH","THEAD","TR","UL"]);
+  /* inline runs must be walked, not textContent'd: an element's textContent drops
+     descendant <br>s entirely, gluing "onward"+"All" into one token */
+  const inlineText = node => {
+    if (node.nodeType === 3 || node.nodeType === 4) return node.data;
+    if (node.nodeType !== 1) return ""; /* comments/PIs contribute nothing */
+    if (node.tagName === "BR") return "\n";
+    if (node.tagName === "SCRIPT" || node.tagName === "STYLE") return "";
+    let s = "";
+    for (const c of node.childNodes) s += inlineText(c);
+    return s;
+  };
   const collectBlocks = (el, out) => {
     let buf = "";
     const flush = () => { const t = buf.replace(/\s+/g, " ").trim(); if (t) out.push(t); buf = ""; };
@@ -1158,7 +1238,7 @@ function parseEpub(arrayBuf) {
       else if (node.nodeType === 1 && (node.tagName === "SCRIPT" || node.tagName === "STYLE")) continue;
       else if (node.nodeType === 8 || node.nodeType === 7) continue; /* comments/PIs are markup, not prose — never rendered, never spoken */
       else if (node.nodeType === 1 && node.tagName === "BR") buf += "\n"; /* a BR's textContent is "" — the line break must still separate words */
-      else buf += node.textContent;
+      else buf += inlineText(node);
     }
     flush();
   };
@@ -1533,6 +1613,17 @@ async function readerPlayFrom(si) {
     rd.timings.push({ si: i, start: at, end: at + buf.duration });
     rd.scheduleT = at + buf.duration;
     rd.sources.push(src);
+    /* release audio already played: a source node still referenced from JS pins its
+       whole AudioBuffer, so the 90 s cap above bounds only the PENDING audio — a
+       single-file EPUB (one giant chapter) would otherwise retain every second it
+       has played (~96 KB per audio-second). Keep the newest entry unconditionally:
+       the drain and empty-chapter checks below read rd.sources' length and tail. */
+    {
+      let drained = 0;
+      const nowT = rd.ctx.currentTime;
+      while (drained < rd.sources.length - 1 && rd.timings[drained] && rd.timings[drained].end < nowT - 1) drained++;
+      if (drained) { rd.sources.splice(0, drained); rd.timings.splice(0, drained); }
+    }
   }
   if (myToken !== rd.token) return;
   rd.genDone = true;
@@ -1632,7 +1723,7 @@ function readerSettingsChanged() {
   rd.cache.clear();
   if (!rd.book || !rd.started) return;
   if (rd.playing) readerPlayFrom(rd.si);
-  else { readerStopPlayback(); rd.started = false; } /* park: the old voice is already scheduled — resume restarts with the new one */
+  else { readerStopPlayback(); rd.started = false; updateReaderStatus("tap play to resume"); } /* park: the old voice is already scheduled — resume restarts with the new one */
 }
 
 rPlay.addEventListener("click", () => readerToggle());
@@ -1669,7 +1760,7 @@ function buildToc() {
       rScroll.scrollTop = 0;
       saveReaderProgress();
       if (wasPlaying) readerPlayFrom(0);
-      else { rd.started = false; setReaderIcon("play"); }
+      else { rd.started = false; setReaderIcon("play"); updateReaderStatus("tap play to listen"); }
     });
     tocList.appendChild(b);
   });

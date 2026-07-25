@@ -30,6 +30,20 @@ test.describe("stopping and error paths", () => {
     await expect(page.locator("#player")).toBeHidden();
   });
 
+  test("stop during the model download returns to idle immediately", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 3000, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/#paste");
+    await startRead(page);
+    await expect(page.locator("#readBtn")).toHaveText("Stop reading");
+    await page.click("#readBtn"); // the download can't be cancelled — but the UI must not wedge on "Stopping…"
+    await expect(page.locator("#readBtn")).toHaveText("Read aloud", { timeout: 2000 });
+    await expect(page.locator("#player")).toBeHidden();
+    // and once the (background) download lands, reading works instantly
+    await page.waitForTimeout(3200);
+    await startRead(page);
+    await waitForFileMode(page);
+  });
+
   test("model download failure shows the error, cleans up audio contexts, and retry works", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 100, loadFail: true, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.goto("/#paste");

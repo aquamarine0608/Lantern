@@ -73,7 +73,14 @@ test.describe("reader view", () => {
       name: "verse.epub", mimeType: "application/epub+zip",
       buffer: makeEpub({
         title: "Verse Book",
-        chapters: [{ title: "Verse", paras: ["<!-- pagebreak 42 -->", "Half a league,<br/>Half a league onward."] }],
+        chapters: [{
+          title: "Verse",
+          paras: [
+            "<!-- pagebreak 42 -->",
+            "Half a league,<br/>Half a league onward.",
+            "<span>My dear Watson,<br/>Come at once.</span>", // <br> nested in an inline element
+          ],
+        }],
       }),
     });
     await page.click(".book");
@@ -81,7 +88,25 @@ test.describe("reader view", () => {
     await expect(page.locator(".sent").first()).toBeVisible();
     const joined = await page.evaluate(() => [...document.querySelectorAll(".sent")].map((e) => e.textContent).join(""));
     expect(joined).not.toContain("pagebreak"); // converter leftovers must not be read aloud
-    expect(joined).toMatch(/league, Half/); // the <br> must separate words, not glue them
+    expect(joined).toMatch(/league, Half/); // a direct <br> must separate words
+    expect(joined).toMatch(/Watson, Come/); // ...and so must one nested inside a <span>
+  });
+
+  test("no synthesis unit ever exceeds the engine's context window", async ({ page }) => {
+    const endless = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor ".repeat(35).trim();
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "endless.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "Endless", chapters: [{ title: "Run-on", paras: [endless] }] }),
+    });
+    await page.click(".book");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await expect(page.locator(".sent").first()).toBeVisible();
+    const lens = await page.evaluate(() => [...document.querySelectorAll(".sent")].map((e) => e.textContent.length));
+    expect(Math.max(...lens)).toBeLessThanOrEqual(322); // kokoro silently truncates past ~510 phoneme tokens
+    expect(lens.length).toBeGreaterThan(5); // the run-on text was actually split
+    const joined = await page.evaluate(() => [...document.querySelectorAll(".sent")].map((e) => e.textContent).join(""));
+    expect(joined.replace(/\s+/g, " ").trim().length).toBeGreaterThanOrEqual(endless.length); // and nothing was lost
   });
 
   test("back returns to the library", async ({ page }) => {
