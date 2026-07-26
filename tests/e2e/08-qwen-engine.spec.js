@@ -1364,4 +1364,115 @@ test.describe("Qwen3-TTS server engine", () => {
     await expect(page.locator("#bannerText")).toContainText(
       "The voice and API key showing here are an unfinished edit — Lantern is still reading with the last ones you saved. Type them again to save them.");
   });
+
+  /* Round 26 re-narrowed a pair hold only inside the commits' value-CHANGED branches.
+     The other ways half a hold gets answered — reverting a field to its live value
+     (the equal-value fallthrough) and the refusal exits that pass held=false — reached
+     only clearQwenHold, which is all-or-nothing and returns while the sibling is still
+     held. The pair wording then stood naming a field that matches live, and its "type
+     it again" remedy was a guaranteed no-op there, so it never came down. */
+  test("reverting the voice to its live value re-narrows the hold to the key alone", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenVoice", "ethan");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({
+        u: url, v: "cherry", k: "sk-draft", bv: "https://host-b.example", bk: "https://host-b.example" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("The voice and API key showing here");
+    // put the LIVE voice back: no value CHANGES, so only the fallthrough runs
+    await page.fill("#qwenVoice", "ethan");
+    await page.locator("#qwenVoice").blur();
+    await expect(page.locator("#banner")).toBeVisible(); // the key is genuinely still held
+    await expect(page.locator("#bannerText")).toContainText("The API key showing here");
+    await expect(page.locator("#bannerText")).not.toContainText("voice");
+  });
+
+  test("reverting the key to its live value re-narrows the hold to the voice alone", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenVoice", "ethan");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({
+        u: url, v: "cherry", k: "sk-draft", bv: "https://host-b.example", bk: "https://host-b.example" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("The voice and API key showing here");
+    await page.fill("#qwenKey", "sk-live");
+    await page.locator("#qwenKey").blur();
+    await expect(page.locator("#banner")).toBeVisible();
+    await expect(page.locator("#bannerText")).toContainText("The voice showing here");
+    await expect(page.locator("#bannerText")).not.toContainText("API key");
+  });
+
+  test("a hold half-answered on a REFUSED commit re-narrows too", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenVoice", "ethan");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      // a restored-but-unconfirmed address: commitShownServer refuses the whole commit,
+      // so the key blur exits through refuseSibling(held=false) without ever committing
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({
+        u: "https://host-a.example", v: "zed", k: "sk-draft",
+        bv: "https://host-a.example", bk: "https://host-a.example" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("the voice and API key you typed are still waiting on it");
+    await page.fill("#qwenKey", "sk-live"); // the key is no longer held; the voice still is
+    await page.locator("#qwenKey").blur();
+    await expect(page.locator("#banner")).toBeVisible();
+    await expect(page.locator("#bannerText")).toContainText("the voice you typed is still waiting on it");
+    await expect(page.locator("#bannerText")).not.toContainText("API key");
+  });
+
+  /* The reader's banner is position:fixed over the top of #rScroll, so it covers the
+     first lines of the chapter — exactly where the failed sentence is parked. A remedy
+     naming a sentence tap was therefore pointing at something the banner itself was
+     intercepting. It must name the player, which the banner can never reach. */
+  test("the reader's failure banner names a remedy its own float cannot cover", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.setViewportSize({ width: 390, height: 780 });
+    await page.goto("/");
+    await importEpub(page);
+    await enableQwen(page);
+    await setQwenFail(true); // the very first sentence fails, at scrollTop 0
+    await page.click(".book");
+    await page.click("#rPlay");
+
+    await expect(page.locator("#bannerText")).toContainText("Tap play to try again.");
+    await expect(page.locator("#bannerText")).not.toContainText("Tap a sentence");
+    // the banner agrees with the status line the same park writes
+    await expect(page.locator("#rStatus")).toContainText("tap play to retry");
+
+    // the remedy it names is genuinely reachable: the banner does not cover #rPlay...
+    const covered = await page.evaluate(() => {
+      const r = document.getElementById("rPlay").getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return document.getElementById("banner").contains(hit);
+    });
+    expect(covered).toBe(false);
+    // ...while the sentence the old message pointed at IS underneath it
+    const sentenceCovered = await page.evaluate(() => {
+      const s = document.querySelector(".sent");
+      const r = s.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return document.getElementById("banner").contains(hit);
+    });
+    expect(sentenceCovered).toBe(true);
+
+    // and tapping play really does retry the parked sentence
+    await setQwenFail(false);
+    await page.click("#rPlay");
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBe(0);
+  });
 });

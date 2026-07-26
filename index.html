@@ -116,6 +116,11 @@
      ensureEngineReady can raise it a few ms into press 1 of a double-click, moving
      the text under press 2. Float it over the text, below .r-top, so Back /
      Chapters / Aa and the player controls the message points at stay tappable.
+     It DOES cover the first ~2-3 lines of the chapter at scrollTop 0, and
+     block:"center" cannot scroll a sentence out from under it there — so no reader
+     message may name a SENTENCE tap as its remedy; point at the player instead.
+     (Reserving space for it is not the fix: that reintroduces the double-click
+     text-shift this float and the 2lh .r-status rule exist to prevent.)
      z-index 7 keeps it under the sheet layer (backdrop 8, sheet 9); the sheet rule
      below lifts it to 10 whenever a sheet is open. */
   body.reading .banner {
@@ -2059,9 +2064,22 @@ async function readerPlayFrom(si, { scroll = true } = {}) {
         console.error(err);
         genFailed = true;
         if (myToken === rd.token) {
+          /* "tap play", NOT "tap a sentence": this banner is position:fixed over the
+             top of #rScroll (see body.reading .banner) and covers the first 2-3 lines
+             of the chapter — which is exactly where the failed sentence is parked in
+             every common failure (a down server, a wrong key, or an offline device
+             fails on sentence 1, and a chapter auto-advance re-enters at sentence 0
+             with scrollTop 0). highlightSentence's block:"center" cannot scroll it
+             out from under the banner at scrollTop 0, so the tap the message asks
+             for lands on the banner itself — dead, with no feedback. The player sits
+             at the bottom of the fixed-height column where the banner can never
+             reach it, the park leaves rd.si on the failed sentence with rd.started
+             false (finish()'s genFailed branch) so rPlay retries that very sentence,
+             and this now agrees with the "tap play to retry" status line it used to
+             contradict. Tapping a visible sentence still works, unadvertised. */
           showBanner(engine === "qwen"
-            ? qwenErrorHtml(err, "Tap a sentence to try again.")
-            : kokoroErrorHtml("Tap a sentence to try again."), { error: true });
+            ? qwenErrorHtml(err, "Tap play to try again.")
+            : kokoroErrorHtml("Tap play to try again."), { error: true });
           rd.genDone = true; updateReaderStatus();
         }
         break;
@@ -2638,16 +2656,38 @@ for (const [v, k] of [[true, true], [true, false], [false, true]])
    and reportQwenShadow bails on !vHeld && !kHeld so even a sheet reopen cannot
    re-evaluate it. Exactly reportQwenShadow's condition, negated: what it would not
    report, this takes down. Retraction only — it can never RAISE a banner, so a
-   pristine focus-and-leave stays the no-op the blur contract promises. */
+   pristine focus-and-leave stays the no-op the blur contract promises.
+   All-or-nothing by design: it returns while EITHER field still diverges, so it
+   cannot re-word a pair hold that only HALF answers. That case belongs to
+   requoteQwenHold below, which every caller of this that is not itself picking a
+   remedy calls immediately after. */
 function clearQwenHold() {
   if (banner.hidden || !bannerIsQwenHold()) return;
   if ((qwenVoice.value.trim() || "cherry") !== qwenVoiceName) return; /* still held */
   if (qwenKey.value.trim() !== qwenApiKey) return;
   hideBanner();
 }
+/* clearQwenHold is all-or-nothing: it retracts only once NOTHING is held. But a
+   two-field hold can be answered by HALF — and the re-narrowing that names only the
+   still-held sibling (HOLD_SUBJ) lives strictly inside the commits' value-CHANGED
+   branches. The other ways a field stops being held reach neither: reverting it to
+   its live value lands on the equal-value fallthrough, and the commitShownServer /
+   stale-stamp refusals exit through refuseSibling's !held branch. Both then leave
+   pair wording standing that names a field which now matches live — and whose "type
+   them again" remedy is a guaranteed no-op there (the changed branch is skipped
+   again), so the banner never comes down: bannerIsQwenHold exempts it from every
+   clear site, and only a sheet reopen re-evaluates it. Re-word the hold rather than
+   only retracting it. Gated on a hold ALREADY standing, so this can never RAISE one
+   and a pristine focus-and-leave stays the no-op the blur contract promises.
+   No recursion: reportQwenShadow re-enters refuseSibling with held=true (which
+   returns via showBanner), and calls clearQwenHold only when nothing is held —
+   which this helper's own guard has already excluded by then. */
+function requoteQwenHold() { if (!banner.hidden && bannerIsQwenHold()) reportQwenShadow(); }
 function refuseSibling(held, why) {
   flushQwenFields(); /* the value still rides in the draft */
-  if (!held) { clearQwenHold(); return; } /* a hold this commit ANSWERED must go */
+  /* a hold this commit ANSWERED must go — or, if it answered only HALF of one, be
+     re-worded down to the sibling that is genuinely still held */
+  if (!held) { clearQwenHold(); requoteQwenHold(); return; }
   if (!banner.hidden && bannerText.innerHTML === why) return; /* change+blur are ONE gesture — say it once */
   showBanner(why, { error: true });
 }
@@ -2726,7 +2766,9 @@ function commitQwenVoice() {
     readerSettingsChanged();
   }
   flushQwenFields();
-  clearQwenHold(); /* the equal-value fallthrough skips the branch above entirely */
+  /* the equal-value fallthrough skips the branch above entirely — so a hold the user
+     answered by putting the LIVE voice back is re-worded (or retracted) only here */
+  clearQwenHold(); requoteQwenHold();
   updateQwenDraftNote();
 }
 function commitQwenKey() {
@@ -2744,7 +2786,9 @@ function commitQwenKey() {
     readerSettingsChanged();
   }
   flushQwenFields();
-  clearQwenHold(); /* the equal-value fallthrough skips the branch above entirely */
+  /* the equal-value fallthrough skips the branch above entirely — so a hold the user
+     answered by putting the LIVE key back is re-worded (or retracted) only here */
+  clearQwenHold(); requoteQwenHold();
   updateQwenDraftNote();
 }
 for (const [el, commit] of [[qwenUrl, commitQwenUrl], [qwenVoice, commitQwenVoice], [qwenKey, commitQwenKey]]) {
