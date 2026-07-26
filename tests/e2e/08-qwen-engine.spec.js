@@ -912,9 +912,12 @@ test.describe("Qwen3-TTS server engine", () => {
     }, QWEN_URL);
     await page.goto("/");
     await page.click("#libVoiceBtn");
-    // the shadow report calls it what it is — there is no "other address" to restore
-    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
-    // confirming the live address holds the pristine key and REPEATS the right remedy
+    // the emptied Server field blocks every sibling commit, so "type them again"
+    // would be a guaranteed no-op here — the address is the only remedy that moves,
+    // and it is what the blur refusals say too (proved in the degenerate-field test)
+    await expect(page.locator("#bannerText")).toContainText("Confirm the Server address");
+    // confirming the live address holds the pristine key and NAMES the remedy that
+    // now works — there is no "other address" to restore, so it is a draft, not stale
     await page.fill("#qwenUrl", QWEN_URL);
     await page.locator("#qwenUrl").blur();
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-old");
@@ -1030,9 +1033,12 @@ test.describe("Qwen3-TTS server engine", () => {
     await page.locator("#qwenUrl").blur();
     await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
     await page.click(".sheet:not([hidden]) .sheet-done");
-    await page.click("#pasteModeBtn"); // the route change clears every banner
-    await expect(page.locator("#banner")).toBeHidden();
-    // reopening settings must re-report a TYPED hold, not only a script-restored one
+    await page.click("#pasteModeBtn"); // a route change answers no hold — it must survive
+    await expect(page.locator("#banner")).toBeVisible(); // toContainText alone reads hidden text
+    await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
+    // and if anything else ever does hide it, reopening settings must re-report a
+    // TYPED hold, not only a script-restored one
+    await page.evaluate(() => { document.getElementById("banner").hidden = true; });
     await page.click("#pasteVoiceBtn");
     await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
@@ -1076,6 +1082,151 @@ test.describe("Qwen3-TTS server engine", () => {
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(""); // the emptying itself commits
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-A"); // the key does NOT ride
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull(); // edit kept
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+  });
+
+  test("committing the voice never silently swallows a hold that describes the KEY", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenVoice", "ethan");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      // the KEY is parked for another host; the voice shown is the live one
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "ethan", k: "sk-for-b", bv: url, bk: "https://host-b.example" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
+    // a good voice commit answers ITS OWN error, not the one standing for the key
+    await page.fill("#qwenVoice", "sage");
+    await page.locator("#qwenVoice").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenVoice"))).toBe("sage"); // the commit really happened
+    await expect(page.locator("#banner")).toBeVisible();
+    await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live"); // still shadowed
+  });
+
+  test("committing the key never silently swallows a hold that describes the VOICE", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenVoice", "ethan");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      // mirrored: the VOICE is parked for another host, the key shown is the live one
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "cherry", k: "sk-live", bv: "https://host-b.example", bk: url }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
+    await page.fill("#qwenKey", "sk-new");
+    await page.locator("#qwenKey").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-new");
+    await expect(page.locator("#banner")).toBeVisible();
+    await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenVoice"))).toBe("ethan"); // still shadowed
+  });
+
+  test("a hold raised over a degenerate Server field names the address, not a retype that is refused", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      // scheme-only Server field over a working server, key stamped with the "" wildcard
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "http://", v: "", k: "sk-draft", bv: "", bk: "" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    // "type them again" cannot work here — commitShownServer refuses on an empty
+    // shown address — so the hold must name the address instead
+    await expect(page.locator("#bannerText")).toContainText("Confirm the Server address");
+    const onOpen = await page.locator("#bannerText").innerHTML();
+    // and the blur refusal must say the very same thing, not overwrite it
+    await page.fill("#qwenKey", "sk-typed");
+    await page.locator("#qwenKey").blur();
+    expect(await page.locator("#bannerText").innerHTML()).toBe(onOpen);
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
+    // the remedy it names really does release the key
+    await page.fill("#qwenUrl", QWEN_URL);
+    await page.locator("#qwenUrl").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-typed");
+    await expect(page.locator("#banner")).toBeHidden();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).toBeNull();
+  });
+
+  test("a hold over a restored-but-unconfirmed address names the address, not a retype that is refused", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      // a valid address the user never confirmed this session + a "" wildcard stamp
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "https://host-b.example", v: "", k: "sk-draft", bv: "", bk: "" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("Confirm the Server address");
+    const onOpen = await page.locator("#bannerText").innerHTML();
+    await page.fill("#qwenKey", "sk-typed"); // refused: the shown address is unconfirmed
+    await page.locator("#qwenKey").blur();
+    expect(await page.locator("#bannerText").innerHTML()).toBe(onOpen);
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
+    // confirming the address is what unblocks it, exactly as the banner says
+    await page.click("#qwenUseShown");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe("https://host-b.example");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-typed");
+  });
+
+  test("an unanswered hold survives the library→paste hop that used to eat it", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "cherry", k: "sk-draft", bv: url, bk: url }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    // a route change answers nothing, and the hold's remedy is reachable from the
+    // paste view too — without this the readBtn guard was already a no-op
+    await page.click("#pasteModeBtn");
+    await expect(page.locator("#banner")).toBeVisible();
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    // …and back again
+    await page.click("#pasteBackBtn");
+    await expect(page.locator("#banner")).toBeVisible();
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
+  });
+
+  test("an unanswered hold survives the hop into a book, where a whole chapter would use it", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenVoice", "ethan");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "cherry", k: "sk-draft", bv: url, bk: url }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await importEpub(page);
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click(".book"); // library → reader
+    await expect(page.locator("#rPlay")).toBeVisible();
+    await expect(page.locator("#banner")).toBeVisible();
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    // and the reading it starts really does use the live pair, not the shown one
+    await page.click("#rPlay");
+    await expect(page.locator(".sent.speaking")).toHaveCount(1, { timeout: 15_000 });
+    const reqs = await getQwenRequests();
+    expect(reqs[reqs.length - 1].__auth).toBe("Bearer sk-live");
+    expect(reqs[reqs.length - 1].voice).toBe("ethan");
     await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
   });
 });

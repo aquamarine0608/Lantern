@@ -2643,7 +2643,19 @@ function reportQwenShadow() {
      ride gates are strict equality, so that is only true when every held value was
      stamped for that very address. A non-empty foreign stamp gets the cross-host
      remedy; the "" wildcard (typed beside no address) is an unfinished edit. */
-  const why = shown && shown !== qwenServer && stamps.every(b => b === shown) ? QWEN_HOLD
+  /* would a retype even REACH the value? commitQwenVoice/commitQwenKey both route
+     through commitShownServer, which refuses while the shown address is empty or
+     degenerate over a working server, or restored-but-never-confirmed. In those
+     states QWEN_HOLD_DRAFT's "type them again" (and QWEN_HOLD_STALE's "type them
+     again for the address now shown") is the guaranteed no-op the comment above
+     QWEN_HOLD_STALE forbids, and settling the address is the only remedy — the very
+     one the blur refusals already raise here, so this also stops a mere sheet reopen
+     from overwriting their correct message with a wrong one. The condition is the
+     exact negation of commitShownServer's success set: with shown !== qwenServer its
+     `!v && !qwenServer` early-true is unreachable, so it cannot mis-fire. */
+  const serverBlocks = shown !== qwenServer && (!shown || !qwenUrlTouched);
+  const why = serverBlocks ? QWEN_HOLD
+    : shown && shown !== qwenServer && stamps.every(b => b === shown) ? QWEN_HOLD
     : stamps.some(b => b && b !== shown) ? QWEN_HOLD_STALE
     : QWEN_HOLD_DRAFT;
   refuseSibling(true, why);
@@ -2661,6 +2673,13 @@ function commitQwenVoice() {
     qwenVoiceName = v;
     try { localStorage.setItem("lantern.qwenVoice", v); } catch {}
     clearErrorBanner(); /* the parked error describes an attempt made with the OLD voice */
+    /* ...but clearErrorBanner hides ANY error, including a QWEN_HOLD* raised for the
+       KEY, which this commit did not answer. Re-report it in the same call, exactly
+       as commitQwenUrl does — a no-op when nothing is held (the field just committed
+       matches live, so it can never register as held). Kept INSIDE this branch: an
+       unconditional call would raise a hold on a pristine focus-and-leave and break
+       the blur no-op contract. */
+    reportQwenShadow();
     readerSettingsChanged();
   }
   flushQwenFields();
@@ -2676,6 +2695,7 @@ function commitQwenKey() {
     qwenApiKey = v;
     try { localStorage.setItem("lantern.qwenKey", v); } catch {}
     clearErrorBanner(); /* "check the API key in Voice settings" is answered the moment a new key is committed */
+    reportQwenShadow(); /* the VOICE may still be held — this commit did not answer that (see commitQwenVoice) */
     readerSettingsChanged();
   }
   flushQwenFields();
@@ -2833,8 +2853,16 @@ function showView(name) {
   if (activeView === "paste" && name !== "paste") stopQuickRead();
   /* an error raised in one view must not follow the user into another, where
      "this book" / "tap a sentence" refer to nothing on screen. Guarded on
-     activeView so the very first route() can't wipe the boot-failure banner. */
-  if (activeView) clearErrorBanner();
+     activeView so the very first route() can't wipe the boot-failure banner.
+     A "Not saved yet" hold is EXEMPT: it reports on no attempt and no view — it says
+     the values in Voice settings are not the ones reading uses, and its remedy is
+     reachable from every view (libVoiceBtn / pasteVoiceBtn / fontBtn all open the
+     same sheet), so a route change answers nothing. Without this the ordinary
+     library→paste and library→book hops wiped an unanswered hold one tap BEFORE
+     readBtn / readerPlayFrom could honour it, leaving the destination view with a
+     healthy chip, no note (updateQwenDraftNote covers only Server divergence) and a
+     whole passage synthesised with the shadowed voice/key. */
+  if (activeView && !bannerIsQwenHold()) clearErrorBanner();
   activeView = name;
   closeSheets({ restoreFocus: false }); /* sheets are shared between views — never leave one floating across a switch, and the opener is leaving the screen */
   viewLibrary.classList.toggle("active", name === "library");
