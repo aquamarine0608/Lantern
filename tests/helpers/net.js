@@ -35,6 +35,7 @@ function qwenControl(query) {
 const setQwenHang = (hang) => qwenControl(`hang=${hang ? 1 : 0}`);
 const setQwenFail = (fail) => qwenControl(`fail=${fail ? 1 : 0}`);
 const setQwenRate = (rate) => qwenControl(`rate=${rate}`);
+const setQwenDelay = (ms) => qwenControl(`delay=${ms}`);
 
 function getQwenRequests() {
   return new Promise((resolve, reject) => {
@@ -46,4 +47,4 @@ function getQwenRequests() {
   });
 }
 
-module.exports = { setAppOffline, setCdnOffline, setQwenOffline, setQwenHang, setQwenFail, setQwenRate, getQwenRequests };
+module.exports = { setAppOffline, setCdnOffline, setQwenOffline, setQwenHang, setQwenFail, setQwenRate, setQwenDelay, getQwenRequests };

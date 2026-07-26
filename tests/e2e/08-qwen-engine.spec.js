@@ -1,6 +1,6 @@
 const { test, expect, startRead, waitForFileMode } = require("../helpers/fixtures");
 const { importEpub } = require("../helpers/epub");
-const { setQwenOffline, setQwenHang, setQwenFail, setQwenRate, getQwenRequests } = require("../helpers/net");
+const { setQwenOffline, setQwenHang, setQwenFail, setQwenRate, setQwenDelay, getQwenRequests } = require("../helpers/net");
 const { makeEpub } = require("../helpers/epub");
 
 const QWEN_URL = "http://127.0.0.1:4174";
@@ -25,6 +25,7 @@ test.describe("Qwen3-TTS server engine", () => {
     await setQwenHang(false);
     await setQwenFail(false);
     await setQwenRate(22050);
+    await setQwenDelay(0);
   });
 
   test("pasting the full endpoint URL still works — the path is not doubled", async ({ page, mockTTS }) => {
@@ -452,6 +453,73 @@ test.describe("Qwen3-TTS server engine", () => {
     await waitForFileMode(page);
     const reqs = await getQwenRequests();
     expect(reqs[reqs.length - 1].voice).toBe("sage");
+  });
+
+  test("a draft for a DIFFERENT server never leaks its key to the committed one", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url); // a WORKING committed server
+      // an interrupted edit for some other host, key typed for THAT host
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "https://other-host.example", v: "othervoice", k: "sk-for-other-host" }));
+    }, QWEN_URL);
+    await page.goto("/#paste");
+    // the refused draft's key and voice must NOT be committed against the old server
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBeNull();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenVoice"))).toBeNull();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull(); // the edit is kept, not lost
+    await startRead(page);
+    await waitForFileMode(page);
+    const reqs = await getQwenRequests();
+    const last = reqs[reqs.length - 1];
+    expect(last.__auth).toBeNull(); // no Bearer token went to the committed host
+    expect(last.voice).not.toBe("othervoice");
+  });
+
+  test("committing only the key adopts the address shown beside it — never the previous one", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", "https://old-host.example");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "", k: "" })); // new address, restored pristine
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.fill("#qwenKey", "sk-new-key");
+    await page.locator("#qwenKey").blur(); // commits key — and must adopt the SHOWN address with it
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(QWEN_URL);
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-new-key");
+    // and the request proves URL and key travel together
+    await page.click("#pasteModeBtn");
+    await startRead(page);
+    await waitForFileMode(page);
+    const reqs = await getQwenRequests();
+    expect(reqs[reqs.length - 1].__auth).toBe("Bearer sk-new-key");
+  });
+
+  test("changing the voice mid-paste-reading finishes the session in the voice it started with", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await enableQwen(page);
+    await setQwenDelay(400); // slow the server so the session is still running mid-edit
+    await page.click("#pasteModeBtn");
+    await startRead(page, "One here. Two here. Three here. Four here. Five here. Six here.");
+    await expect(page.locator("#statusLine")).toContainText(/sentence/, { timeout: 15_000 });
+    await page.click("#pasteVoiceBtn");
+    await page.fill("#qwenVoice", "sage");
+    await page.locator("#qwenVoice").blur(); // committed mid-reading
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await setQwenDelay(0);
+    await waitForFileMode(page, 20_000);
+    const reqs = (await getQwenRequests()).filter((r) => typeof r.input === "string" && r.input.includes("here"));
+    // one reading = one voice: no request switched to the new voice mid-flight
+    for (const r of reqs) expect(r.voice).toBe("cherry");
+    // the NEXT reading uses the committed voice
+    await startRead(page, "Fresh text now.");
+    await waitForFileMode(page);
+    const after = await getQwenRequests();
+    expect(after[after.length - 1].voice).toBe("sage");
   });
 
   test("committing a corrected voice clears the error that demanded the correction", async ({ page, mockTTS }) => {

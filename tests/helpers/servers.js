@@ -151,6 +151,7 @@ function startQwenServer(state) {
       if (ctlUrl.searchParams.has("hang")) state.qwenHang = ctlUrl.searchParams.get("hang") === "1";
       if (ctlUrl.searchParams.has("fail")) state.qwenFail = ctlUrl.searchParams.get("fail") === "1";
       if (ctlUrl.searchParams.has("rate")) state.qwenRate = parseInt(ctlUrl.searchParams.get("rate"), 10) || 22050;
+      if (ctlUrl.searchParams.has("delay")) state.qwenDelay = parseInt(ctlUrl.searchParams.get("delay"), 10) || 0;
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ qwenOffline: state.qwenOffline, qwenHang: state.qwenHang, qwenFail: state.qwenFail, qwenRate: state.qwenRate }));
       return;
@@ -170,6 +171,7 @@ function startQwenServer(state) {
       req.on("end", () => {
         let payload = {};
         try { payload = JSON.parse(body); } catch {}
+        payload.__auth = req.headers.authorization || null; /* recorded for assertions */
         state.qwenRequests.push(payload);
         if (state.qwenHang) return; /* accept the request, never answer — a black-holed server */
         if (state.qwenFail) {
@@ -177,6 +179,7 @@ function startQwenServer(state) {
           res.end(JSON.stringify({ error: "mock server failure" }));
           return;
         }
+        const respond = () => {
         const rate = state.qwenRate || 22050;
         const n = Math.round((rate * 0.5) / (payload.speed || 1));
         const buf = Buffer.alloc(44 + n * 2);
@@ -187,6 +190,9 @@ function startQwenServer(state) {
         for (let i = 0; i < n; i++) buf.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 260 * i) / rate) * 0.3 * 32767), 44 + i * 2);
         res.writeHead(200, { ...cors, "content-type": "audio/wav" });
         res.end(buf);
+        };
+        if (state.qwenDelay) setTimeout(respond, state.qwenDelay);
+        else respond();
       });
       return;
     }

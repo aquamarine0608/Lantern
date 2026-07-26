@@ -214,9 +214,13 @@
      a fixed-height column, so a height change takes space straight out of #rScroll —
      and readerPlayFrom repaints this line synchronously inside press 1 of a
      double-click (the 1→2 line flip moved the text under press 2, so the look-up
-     gesture's undo never fired). Two lines fits every status down to 320px. */
+     gesture's undo never fired). Two lines fits every status down to 320px.
+     Height in lh, not px: a browser minimum-font-size floor raises the computed
+     font size while px lengths stay put, and overflow:hidden would clip the tail —
+     exactly where the "tap play to …" park hints live. The px calc is the fallback
+     for engines without the lh unit. */
   .r-status { font-size: 12px; line-height: 1.45; color: var(--mist); text-align: center;
-              flex: 0 0 auto; height: calc(2 * 1.45 * 12px); overflow: hidden; }
+              flex: 0 0 auto; height: calc(2 * 1.45 * 12px); height: 2lh; overflow: hidden; }
   .r-controls { justify-content: center; }
   .r-hint { text-align: center; }
 
@@ -805,8 +809,12 @@ function normalizeServerUrl(v) {
   } catch { return ""; }
 }
 
-async function qwenSynthesize(text, signal, spd = speed) {
-  const base = normalizeServerUrl(qwenServer);
+/* cfg defaults are evaluated at CALL time, so the reader (which restarts/parks via
+   readerSettingsChanged on every commit) keeps reading live globals, while the paste
+   stream passes a per-session snapshot */
+async function qwenSynthesize(text, signal, spd = speed,
+    cfg = { server: qwenServer, voice: qwenVoiceName, key: qwenApiKey }) {
+  const base = normalizeServerUrl(cfg.server);
   if (!base) throw new Error("no Qwen3-TTS server configured");
   /* a black-holed server must never hang a pump: hard timeout + caller abort */
   const ctl = new AbortController();
@@ -816,11 +824,11 @@ async function qwenSynthesize(text, signal, spd = speed) {
   if (signal) { if (signal.aborted) onOuter(); else signal.addEventListener("abort", onOuter, { once: true }); }
   try {
     const headers = { "content-type": "application/json" };
-    if (qwenApiKey) headers.authorization = "Bearer " + qwenApiKey;
+    if (cfg.key) headers.authorization = "Bearer " + cfg.key;
     const res = await fetch(base + "/v1/audio/speech", {
       method: "POST",
       headers,
-      body: JSON.stringify({ model: "qwen3-tts", input: text, voice: qwenVoiceName || "cherry", speed: spd, response_format: "wav" }),
+      body: JSON.stringify({ model: "qwen3-tts", input: text, voice: cfg.voice || "cherry", speed: spd, response_format: "wav" }),
       signal: ctl.signal,
     });
     if (!res.ok) throw Object.assign(new Error("TTS server responded " + res.status), { qwenStatus: res.status });
@@ -863,7 +871,13 @@ async function synthesizeSentence(text, signal) {
 async function* sentenceAudioStream(text, signal) {
   const sessSpeed = speed; /* one paste reading keeps one speed */
   if (engine === "qwen") {
-    for (const s of splitSentences(text)) yield await qwenSynthesize(s, signal, sessSpeed);
+    /* …and ONE server config: qwenSynthesize otherwise reads the globals live, and
+       this view's own Voice opener can commit new ones mid-reading (commitQwenVoice's
+       readerSettingsChanged() returns early with no book open) — half the passage,
+       and half the saved WAV, would come back in a different voice or off a
+       different server. Same snapshot the kokoro branch takes below. */
+    const sessCfg = { server: qwenServer, voice: qwenVoiceName, key: qwenApiKey };
+    for (const s of splitSentences(text)) yield await qwenSynthesize(s, signal, sessSpeed, sessCfg);
   } else {
     /* deliberately NOT TextSplitterStream: it only honours a terminator (even "\n")
        while its quote/bracket stack is empty, so one unmatched " or ' — a plural
@@ -2288,13 +2302,29 @@ function commitQwenUrl() {
   if (v !== qwenServer) {
     qwenServer = v;
     try { localStorage.setItem("lantern.qwenUrl", v); } catch {}
+    /* the voice/key still showing in the fields were typed FOR this address (a
+       restored draft fires no change/blur of its own) — adopt them with it, never
+       against the address they replaced. In ordinary use these are no-ops. */
+    const dv = qwenVoice.value.trim() || "cherry", dk = qwenKey.value.trim();
+    if (dv !== qwenVoiceName) { qwenVoiceName = dv; try { localStorage.setItem("lantern.qwenVoice", dv); } catch {} }
+    if (dk !== qwenApiKey) { qwenApiKey = dk; qwenKey.value = dk; try { localStorage.setItem("lantern.qwenKey", dk); } catch {} }
     clearErrorBanner(); /* "set your server first" is answered the moment an address is committed */
     applyEngineUI();
     readerSettingsChanged();
   }
   flushQwenFields(); /* clears the draft once nothing is uncommitted */
 }
+/* the three fields are ONE config, and a draft-restored Server field is pristine —
+   change/blur never fire for it. Committing the key or voice alone would pair it
+   with the PREVIOUS address while the sheet shows the new one. Adopt the shown
+   address alongside it — but only when it normalizes to a real URL, so a
+   half-deleted one still cannot wipe a working server. */
+function commitShownServer() {
+  const v = normalizeServerUrl(qwenUrl.value);
+  if (v && v !== qwenServer) commitQwenUrl();
+}
 function commitQwenVoice() {
+  commitShownServer();
   const v = qwenVoice.value.trim() || "cherry";
   if (v !== qwenVoiceName) {
     qwenVoiceName = v;
@@ -2305,6 +2335,7 @@ function commitQwenVoice() {
   flushQwenFields();
 }
 function commitQwenKey() {
+  commitShownServer();
   const v = qwenKey.value.trim();
   qwenKey.value = v;
   if (v !== qwenApiKey) {
@@ -2362,11 +2393,18 @@ try {
     qwenUrl.value = qwenServer;
     try { localStorage.setItem("lantern.qwenUrl", qwenServer); } catch {}
   }
-  if (hadVoice === null && qwenVoice.value.trim()) {
+  /* a draft is ONE interrupted edit: the voice and key in it were typed for the
+     address typed beside them. When that address was refused just above (a working
+     one already exists), adopting the rest would point the new server's Bearer key
+     at the OLD host — silently and persistently. Adopt the rest only when the
+     shown address IS the live one (true in every all-fresh case: the block above
+     sets qwenUrl.value = qwenServer when it adopts). */
+  const draftServerIsLive = normalizeServerUrl(qwenUrl.value) === qwenServer;
+  if (draftServerIsLive && hadVoice === null && qwenVoice.value.trim()) {
     qwenVoiceName = qwenVoice.value.trim();
     try { localStorage.setItem("lantern.qwenVoice", qwenVoiceName); } catch {}
   }
-  if (hadKey === null && qwenKey.value.trim()) {
+  if (draftServerIsLive && hadKey === null && qwenKey.value.trim()) {
     qwenApiKey = qwenKey.value.trim();
     qwenKey.value = qwenApiKey;
     try { localStorage.setItem("lantern.qwenKey", qwenApiKey); } catch {}
