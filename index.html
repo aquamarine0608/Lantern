@@ -396,6 +396,7 @@
       <!-- real <label for> pairs: with only sibling spans the accessible name falls
            back to the placeholder, announcing the key field as just "optional" -->
       <div class="set-row"><label for="qwenUrl">Server</label><input id="qwenUrl" class="cfg-input" type="url" placeholder="https://your-pc.tail1234.ts.net" spellcheck="false" autocapitalize="none" autocorrect="off" autocomplete="off"></div>
+      <p class="hint" id="qwenDraftNote" hidden><span id="qwenDraftNoteText"></span> <button class="ghost-btn" id="qwenUseShown" type="button">Use this address</button></p>
       <div class="set-row"><label for="qwenVoice">Voice</label><input id="qwenVoice" class="cfg-input" placeholder="cherry" spellcheck="false" autocapitalize="none" autocorrect="off" autocomplete="off"></div>
       <div class="set-row"><label for="qwenKey">API key</label><input id="qwenKey" class="cfg-input" type="password" placeholder="optional" spellcheck="false" autocomplete="off"></div>
       <p class="hint">Qwen3-TTS needs a GPU, so it runs on a computer you own and Lantern streams the voice from it (an OpenAI-compatible <span class="mono">/v1/audio/speech</span> server, reachable over HTTPS with CORS enabled). On-device reading keeps working offline either way.</p>
@@ -470,7 +471,8 @@ const textEl = $("text"), countEl = $("count"), readBtn = $("readBtn"),
       fontMinus = $("fontMinus"), fontPlus = $("fontPlus"), fontVal = $("fontVal"),
       rVoice = $("rVoice"), rSpeeds = $("rSpeeds"),
       engineBtns = $("engineBtns"), kokoroCfg = $("kokoroCfg"), qwenCfg = $("qwenCfg"),
-      qwenUrl = $("qwenUrl"), qwenVoice = $("qwenVoice"), qwenKey = $("qwenKey"), libVoiceBtn = $("libVoiceBtn");
+      qwenUrl = $("qwenUrl"), qwenVoice = $("qwenVoice"), qwenKey = $("qwenKey"), libVoiceBtn = $("libVoiceBtn"),
+      qwenDraftNote = $("qwenDraftNote"), qwenDraftNoteText = $("qwenDraftNoteText"), qwenUseShown = $("qwenUseShown");
 
 /* ---------------- persisted prefs ---------------- */
 let speed = 1;
@@ -1202,8 +1204,13 @@ readBtn.addEventListener("click", async () => {
   streamDest = ctx.createMediaStreamDestination();
   ensureAudioEl();
   audioEl.srcObject = streamDest.stream;
-  audioEl.play().catch(() => {});
-  setMediaSession(true);
+  /* the user may have paused (togglePlay suspends the context) while the
+     resume above was in flight — publish the transport in the state the
+     context actually ended up in, not an assumed "playing" */
+  const livePlaying = ctx.state === "running";
+  if (livePlaying) audioEl.play().catch(() => {});
+  setPlayIcon(livePlaying);
+  setMediaSession(livePlaying);
 
   qrWarmToken = myToken;
   try { await ensureEngineReady(); }
@@ -1400,6 +1407,13 @@ function joinPath(dir, href) {
    initials (Ph.D.), URLs and missing-space-after-period artifacts are everywhere
    in real books. */
 const SENT_END_RE = /(?:[.!?…]+[\])"'”’»]*(?=\s|$)|[。！？]+[」』）》〉】”’]*)/g;
+/* a lone "." after a known abbreviation or an initial is not a sentence end. Anchored
+   at the pending segment's tail; the leading boundary keeps "up."/"it."/"Amr." real.
+   Second branch = a letter preceded by a dot, i.e. the LAST dot of a dotted form
+   (U.S. / D.C. / a.m. / p.m. / e.g. / i.e. / Ph.D.), which the branch above cannot
+   see. Case-sensitive on purpose: /i would swallow the sentence-final "no." and "co.".
+   No lookbehind — Safari <16.4 would SyntaxError on the whole script. */
+const ABBREV_END_RE = /(?:(?:^|[\s("'\[“‘])(?:[A-Za-z]|Mr|Mrs|Ms|Mx|Dr|Prof|Rev|Fr|Hon|Sr|Jr|St|Ste|Mt|Messrs|Capt|Col|Gen|Lt|Sgt|Maj|Adm|Sen|Gov|Pres|Supt|vs|etc|al|cf|ca|approx|No|Nos|Vol|Vols|Fig|Figs|Ch|Chap|Ed|Eds|Inc|Ltd|Co|pp|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec|Mon|Tues?|Wed|Thurs?|Fri|Sat|Sun)|\.[A-Za-z])\.$/;
 /* sentence ends in a CJK codepoint (incl. fullwidth forms) — no space follows it in print.
    Escapes, not literals: U+F900 豈 is visually identical to U+8C48 豈, and typing the wrong
    one once silently widened the class to cover Hangul, surrogates and the whole PUA.
@@ -1441,6 +1455,10 @@ const splitSentences = text => {
   SENT_END_RE.lastIndex = 0;
   while ((m = SENT_END_RE.exec(text))) {
     const end = m.index + m[0].length;
+    /* abbreviation/initial: keep scanning — the terminator is part of this sentence.
+       Only a bare "." can be one, and SENT_END_RE consumes >=1 char, so lastIndex
+       still advances (no spin) and skipping a cut can never drop text. */
+    if (m[0] === "." && ABBREV_END_RE.test(text.slice(last, end))) continue;
     out.push(text.slice(last, end));
     last = end;
   }
@@ -1887,6 +1905,13 @@ async function ensureReaderAudio() {
   ensureAudioEl();
   audioEl.removeAttribute("src");
   audioEl.srcObject = rd.dest.stream;
+  /* a pause that landed inside the activation await above already suspended the
+     context and painted the play icon. Our own play() would fire a play event on
+     the shared element, and the OS-mirror cannot tell it from a lock-screen
+     resume: it would readerToggle(true) and discard that pause. Leave the element
+     paused — readerToggle(true) plays it on the next resume. srcObject stays
+     assigned above so that resume plays THIS run's stream. */
+  if (!rd.playing) return;
   audioEl.play().catch(() => {});
 }
 
@@ -2221,6 +2246,9 @@ function openSheet(sheet) {
   setSheet.hidden = sheet !== setSheet;
   for (const el of sheetInert) if (el) el.inert = true;
   sheet.focus(); /* lands AT on "Chapters, dialog" instead of leaving it behind the backdrop */
+  /* held-back qwen values are otherwise invisible on reopen: the note names the
+     address reading actually uses, the shadow report re-raises the banner */
+  if (sheet === setSheet) { updateQwenDraftNote(); reportQwenShadow(); }
 }
 /* restoreFocus=false for teardown/route changes: the opener is about to be hidden,
    and focusing it there would just drop to <body> a frame later */
@@ -2232,6 +2260,9 @@ function closeSheets({ restoreFocus = true } = {}) {
   /* [hidden] is display:none, so the focused "Done" would otherwise drop focus to
      <body> and restart the next Tab at the top of the document */
   if (wasOpen && restoreFocus && back && back.isConnected && back.offsetParent !== null) back.focus();
+  /* a hold banner raised by the sheet's own blur commits sits at the top of the
+     page — after the sheet closes, make sure the user can actually see it */
+  if (wasOpen && !banner.hidden && banner.classList.contains("error")) banner.scrollIntoView({ block: "nearest" });
 }
 sheetBackdrop.addEventListener("click", () => closeSheets());
 for (const b of document.querySelectorAll(".sheet [data-close]")) b.addEventListener("click", () => closeSheets());
@@ -2311,6 +2342,7 @@ function applyEngineUI() {
     ? "Qwen3-TTS · streamed from your server"
     : "Runs entirely on this device · Kokoro-82M · English";
   refreshLibEmptyCopy(); /* the shelf's empty-state carries the same claim as the footer */
+  updateQwenDraftNote(); /* engine visibility is part of the note's condition */
 }
 function setEngine(e) {
   if (engine === e) return;
@@ -2363,13 +2395,29 @@ let qwenVoiceTouched = false, qwenKeyTouched = false;
 qwenVoice.addEventListener("input", () => { qwenVoiceTouched = true; stampSibs(); });
 qwenKey.addEventListener("input", () => { qwenKeyTouched = true; stampSibs(); });
 const sibsMayRide = v => !qwenSibBase || qwenSibBase === v;
+/* inline, always-visible divergence note: banners can be missed or dismissed, and
+   Escape/backdrop dismissals never fire a blur commit at all — this note lives in
+   the sheet beside the field, states which address reading ACTUALLY uses, and
+   offers the one-tap way to make the shown address the live one. */
+function updateQwenDraftNote() {
+  const shown = normalizeServerUrl(qwenUrl.value);
+  const diverged = engine === "qwen" && shown !== qwenServer;
+  qwenDraftNote.hidden = !diverged;
+  if (!diverged) return;
+  qwenDraftNoteText.textContent = qwenServer
+    ? `Not saved yet — reading still uses ${qwenServer}.`
+    : `Not saved yet — no server address is saved, so Qwen3-TTS can’t read.`;
+  qwenUseShown.hidden = !shown;
+}
+qwenUseShown.addEventListener("click", () => { qwenUrlTouched = true; commitQwenUrl(); updateQwenDraftNote(); });
+qwenUrl.addEventListener("input", updateQwenDraftNote);
 function commitQwenUrl() {
   const v = normalizeServerUrl(qwenUrl.value);
   /* blur alone never promotes a script-restored address the user has not touched
      this session — Done / Escape / backdrop restore focus via closeSheets, and an
      Engine tap blurs on mousedown. Without this a dismissal would commit an
      unconfirmed draft address over a working server and destroy the draft. */
-  if (!qwenUrlTouched && qwenServer && v !== qwenServer) { flushQwenFields(); return; }
+  if (!qwenUrlTouched && qwenServer && v !== qwenServer) { flushQwenFields(); updateQwenDraftNote(); announce(qwenDraftNoteText.textContent); return; }
   qwenUrl.value = v;
   let changed = v !== qwenServer;
   const urlChanged = changed;
@@ -2384,18 +2432,47 @@ function commitQwenUrl() {
      contract promises — it must never promote the draft key/voice the boot block
      refused over a working one (password field: the mistake would be invisible).
      And re-typing the LIVE address never adopts siblings stamped for ANOTHER host. */
+  let heldSib = false;
   if (urlChanged || (qwenUrlTouched && sibsMayRide(v))) {
     const dv = qwenVoice.value.trim() || "cherry", dk = qwenKey.value.trim();
-    if (dv !== qwenVoiceName) { qwenVoiceName = dv; changed = true; try { localStorage.setItem("lantern.qwenVoice", dv); } catch {} }
-    if (dk !== qwenApiKey) { qwenApiKey = dk; qwenKey.value = dk; changed = true; try { localStorage.setItem("lantern.qwenKey", dk); } catch {} }
-    stampSibs(); /* whatever the fields hold is now paired with the live address */
+    /* per-field engagement holds HERE too: committing an address is engagement with
+       the ADDRESS. A sibling the user typed this session travels with their own act
+       whatever the stamp says; a sibling only a SCRIPT put in the field (the boot
+       draft restore) rides only if it was typed beside THIS VERY address — never on
+       the "" wildcard, and never against a host it was not typed for. Otherwise a
+       working key would be overwritten, invisibly (type=password), by the draft the
+       boot block just refused, and the flush below would delete the only copy. */
+    const rideV = qwenVoiceTouched || qwenSibBase === v;
+    const rideK = qwenKeyTouched || qwenSibBase === v;
+    if (dv !== qwenVoiceName) {
+      if (rideV) { qwenVoiceName = dv; changed = true; try { localStorage.setItem("lantern.qwenVoice", dv); } catch {} }
+      else heldSib = true;
+    }
+    if (dk !== qwenApiKey) {
+      if (rideK) { qwenApiKey = dk; qwenKey.value = dk; changed = true; try { localStorage.setItem("lantern.qwenKey", dk); } catch {} }
+      else heldSib = true;
+    }
+    /* only re-pair when nothing was held: a held value keeps its own provenance,
+       which flushQwenFields persists as the draft's `b` */
+    if (!heldSib) stampSibs();
+  } else if (!sibsMayRide(v)) {
+    /* adoption skipped while the shown address IS (or just became) the live one and
+       the siblings are stamped for ANOTHER host — QWEN_HOLD's "confirm the Server
+       address" is a guaranteed no-op here. Restate the remedy that still works —
+       but only for a value the user actually typed, so a pristine focus-and-leave
+       over a restored draft stays the silent no-op the blur contract promises. */
+    heldSib = (qwenVoiceTouched && (qwenVoice.value.trim() || "cherry") !== qwenVoiceName)
+           || (qwenKeyTouched && qwenKey.value.trim() !== qwenApiKey);
   }
   if (changed) {
     clearErrorBanner(); /* "set your server first" / "check the API key" are answered by a real commit */
     applyEngineUI();
     readerSettingsChanged();
   }
+  /* AFTER clearErrorBanner (which would otherwise hide it in the same call) */
+  if (heldSib) refuseSibling(true, QWEN_HOLD_STALE);
   flushQwenFields(); /* clears the draft once nothing is uncommitted */
+  updateQwenDraftNote();
 }
 /* the three fields are ONE config, and a draft-restored Server field is pristine —
    change/blur never fire for it. Committing the key or voice alone would pair it
@@ -2433,11 +2510,27 @@ const QWEN_HOLD = `<b>Not saved yet.</b> Confirm the Server address in Voice set
    stamp, and re-committing the same address can produce neither. Name what actually
    releases the values. */
 const QWEN_HOLD_STALE = `<b>Not saved yet.</b> The voice and API key showing here were typed for a different server address. Type them again for the address now shown to save them — or put that other address back.`;
+/* a draft-restored (never-touched) voice/key has no host mismatch to name — it is
+   simply an unfinished edit the pristine guards will keep refusing silently */
+const QWEN_HOLD_DRAFT = `<b>Not saved yet.</b> The voice and API key showing here are an unfinished edit — Lantern is still reading with the last ones you saved. Type them again to save them.`;
 function refuseSibling(held, why) {
   flushQwenFields(); /* the value still rides in the draft */
   if (!held) return;
   if (!banner.hidden && bannerText.innerHTML === why) return; /* change+blur are ONE gesture — say it once */
   showBanner(why, { error: true });
+}
+/* every refusal above fires on a blur the user may never trigger again — reopening
+   the settings sheet is the one reliable moment to say a shown value is NOT the
+   live one. Reports whichever hold currently applies, with the matching remedy. */
+function reportQwenShadow() {
+  if (engine !== "qwen") return;
+  const vHeld = !qwenVoiceTouched && (qwenVoice.value.trim() || "cherry") !== qwenVoiceName;
+  const kHeld = !qwenKeyTouched && qwenKey.value.trim() !== qwenApiKey;
+  if (!vHeld && !kHeld) return;
+  const why = normalizeServerUrl(qwenUrl.value) !== qwenServer ? QWEN_HOLD
+    : !sibsMayRide(qwenServer) ? QWEN_HOLD_STALE
+    : QWEN_HOLD_DRAFT;
+  refuseSibling(true, why);
 }
 function commitQwenVoice() {
   const v = qwenVoice.value.trim() || "cherry";
@@ -2453,6 +2546,7 @@ function commitQwenVoice() {
     readerSettingsChanged();
   }
   flushQwenFields();
+  updateQwenDraftNote();
 }
 function commitQwenKey() {
   const v = qwenKey.value.trim();
@@ -2467,6 +2561,7 @@ function commitQwenKey() {
     readerSettingsChanged();
   }
   flushQwenFields();
+  updateQwenDraftNote();
 }
 for (const [el, commit] of [[qwenUrl, commitQwenUrl], [qwenVoice, commitQwenVoice], [qwenKey, commitQwenKey]]) {
   el.addEventListener("change", commit);

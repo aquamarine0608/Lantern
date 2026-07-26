@@ -219,4 +219,33 @@ test.describe("stopping and error paths", () => {
     const calls = await page.evaluate(() => window.__TTS_GEN || 0);
     expect(calls).toBe(6);
   });
+
+  test("a pause during the audio-session activation sticks — the publish honours it", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 3000, chunkDelay: 50, chunkSeconds: 0.4 });
+    // activation is a REAL await on iOS: the context starts (and runs) immediately,
+    // but the promise resolves late — a pause tap fits inside that window
+    await page.addInitScript(() => {
+      const origResume = AudioContext.prototype.resume;
+      AudioContext.prototype.resume = function () {
+        const p = origResume.call(this);
+        return new Promise((r) => setTimeout(() => r(p), 600));
+      };
+      const OrigAC = window.AudioContext;
+      window.AudioContext = class extends OrigAC {
+        constructor(...a) { super(...a); window.__lastCtx = this; }
+      };
+    });
+    await page.goto("/#paste");
+    await startRead(page);
+    await page.waitForFunction(() => window.__lastCtx && window.__lastCtx.state === "running");
+    await page.click("#playBtn"); // pause — suspends the context immediately
+    await page.waitForTimeout(900); // the activation await resolves in here
+    // the transport publish must keep the pause, not overwrite it with "playing"
+    expect(await page.evaluate(() => window.__lastCtx.state)).toBe("suspended");
+    expect(await page.evaluate(() => navigator.mediaSession.playbackState)).toBe("paused");
+    await expect(page.locator("#playBtn")).toHaveAttribute("aria-label", "Play");
+    // and resuming from that pause continues into a normal session
+    await page.click("#playBtn");
+    await waitForFileMode(page);
+  });
 });

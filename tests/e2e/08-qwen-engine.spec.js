@@ -774,4 +774,101 @@ test.describe("Qwen3-TTS server engine", () => {
     // the bail-out must not leave the OS transport claiming "playing"
     expect(await page.evaluate(() => navigator.mediaSession.playbackState)).toBe("paused");
   });
+
+  test("a third address never adopts a key stamped for a second host — but that host still can", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", "https://host-a.example");
+      localStorage.setItem("lantern.qwenKey", "sk-A");
+      // an interrupted edit: host B's address and key, stamped for host B
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "", k: "sk-B", b: url }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.fill("#qwenUrl", "https://host-c.example"); // a THIRD host
+    await page.locator("#qwenUrl").blur();
+    // committing C is engagement with the ADDRESS — host B's key must not ride to C
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe("https://host-c.example");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-A");
+    await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
+    // committing the address the key WAS stamped for releases it
+    await page.fill("#qwenUrl", QWEN_URL);
+    await page.locator("#qwenUrl").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-B");
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click("#pasteModeBtn");
+    await startRead(page);
+    await waitForFileMode(page);
+    const reqs = await getQwenRequests();
+    expect(reqs[reqs.length - 1].__auth).toBe("Bearer sk-B");
+  });
+
+  test("reopening settings names a held key, and a same-address keystroke never adopts it", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      // what the app persists after a cross-host refusal: the draft address was
+      // rewritten to the live one, but the key's stamp still names the other host
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "", k: "sk-for-b", b: "https://host-b.example" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    // the held key is reported the moment the sheet opens — not only on a blur
+    await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
+    // a keystroke that only re-normalizes the SAME address is not adoption authority
+    await page.locator("#qwenUrl").focus();
+    await page.keyboard.press("End");
+    await page.keyboard.type("/");
+    await page.locator("#qwenUrl").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull();
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click("#pasteModeBtn");
+    await startRead(page);
+    await waitForFileMode(page);
+    const reqs = await getQwenRequests();
+    expect(reqs[reqs.length - 1].__auth).toBe("Bearer sk-live"); // host B's key never leaked
+  });
+
+  test("the settings sheet names the address reading actually uses, and one tap adopts the shown one", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", "https://old-host.example");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "", k: "" })); // unfinished address edit
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#qwenDraftNote")).toBeVisible();
+    await expect(page.locator("#qwenDraftNoteText")).toContainText("reading still uses https://old-host.example");
+    await page.click("#qwenUseShown"); // adopt the shown address without retyping it
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(QWEN_URL);
+    await expect(page.locator("#qwenDraftNote")).toBeHidden();
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click("#pasteModeBtn");
+    await startRead(page);
+    await waitForFileMode(page); // …and reading actually uses it
+  });
+
+  test("a same-host unfinished key edit is named as such when settings reopen", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      // an unfinished key edit for the SAME host — no address mismatch to blame
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "", k: "sk-tru", b: url }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    // the live key is untouched; finishing the edit commits it
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
+    await page.fill("#qwenKey", "sk-finished");
+    await page.locator("#qwenKey").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-finished");
+  });
 });

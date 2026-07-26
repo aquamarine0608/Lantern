@@ -199,4 +199,29 @@ test.describe("reader view", () => {
     await expect(page.locator("#addBookBtn")).toBeVisible();
     await expect(page.locator("#viewReader")).toBeHidden();
   });
+
+  test("abbreviations like Mr. and a.m. do not split sentences apart", async ({ page }) => {
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "abbrev.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({
+        title: "Abbrev Book",
+        chapters: [{
+          title: "Chapter One",
+          paras: [
+            "My dear Mr. Bennet, said his lady to him one day, have you heard that Netherfield Park is let at last?",
+            "Dr. Watson reached No. 10 at 8 a.m. the next morning. We arrived late.",
+          ],
+        }],
+      }),
+    });
+    await page.click(".book");
+    await expect(page.locator(".sent").first()).toBeVisible();
+    // title + one whole quoted sentence + two real sentences = 4 units, not 8
+    // (spans keep their original trailing spaces so rejoins stay byte-exact)
+    await expect(page.locator(".sent")).toHaveCount(4);
+    await expect(page.locator(".sent").nth(1)).toHaveText(/^My dear Mr\. Bennet.*at last\?\s*$/);
+    await expect(page.locator(".sent").nth(2)).toHaveText(/^Dr\. Watson reached No\. 10 at 8 a\.m\. the next morning\.\s*$/);
+    await expect(page.locator(".sent").nth(3)).toHaveText(/^We arrived late\.\s*$/);
+  });
 });

@@ -479,4 +479,34 @@ test.describe("reading books aloud", () => {
       await setCdnOffline(false);
     }
   });
+
+  test("a pause tapped during the reader's audio activation sticks through the warm-up", async ({ page, mockTTS }) => {
+    // activation is a REAL await on iOS: the context runs immediately, the promise
+    // resolves late — our own play() after it must not discard a pause tapped inside
+    await page.addInitScript(() => {
+      const origResume = AudioContext.prototype.resume;
+      AudioContext.prototype.resume = function () {
+        const p = origResume.call(this);
+        return new Promise((r) => setTimeout(() => r(p), 600));
+      };
+      const OrigAC = window.AudioContext;
+      window.AudioContext = class extends OrigAC {
+        constructor(...a) { super(...a); window.__lastCtx = this; }
+      };
+    });
+    await openBookReady(page, mockTTS, { loadDelay: 3000 });
+    await page.click("#rPlay"); // start — the busy warm-up begins
+    await page.waitForFunction(() => window.__lastCtx && window.__lastCtx.state === "running");
+    await page.click("#rPlay"); // pause while the activation promise is still pending
+    await page.waitForTimeout(900); // activation resolves in here — it must NOT play the element
+    expect(await page.evaluate(() => window.__lastCtx.state)).toBe("suspended");
+    // …and once the engine finishes loading, the pause still stands
+    await page.waitForTimeout(2800);
+    expect(await page.evaluate(() => navigator.mediaSession.playbackState)).toBe("paused");
+    await expect(page.locator("#rIconPlay")).toBeVisible();
+    expect(await page.evaluate(() => window.__lastCtx.state)).toBe("suspended");
+    // resuming picks up THIS run's stream — the highlight starts moving again
+    await page.click("#rPlay");
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThan(0);
+  });
 });

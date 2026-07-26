@@ -124,6 +124,9 @@ test.describe("accessibility and input", () => {
     await page.click("#libVoiceBtn");
     await page.locator("#qwenUrl").focus();
     await page.keyboard.press("Tab");
+    // the divergence note's one-tap adopt button is a legitimate stop after the field…
+    expect(await page.evaluate(() => document.activeElement.id)).toBe("qwenUseShown");
+    await page.keyboard.press("Tab");
     expect(await page.evaluate(() => document.activeElement.id)).toBe("qwenVoice");
     await page.keyboard.press("Tab"); // used to bounce back to qwenUrl forever
     expect(await page.evaluate(() => document.activeElement.id)).toBe("qwenKey");
