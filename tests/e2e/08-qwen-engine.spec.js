@@ -486,7 +486,12 @@ test.describe("Qwen3-TTS server engine", () => {
     await page.goto("/");
     await page.click("#libVoiceBtn");
     await page.fill("#qwenKey", "sk-new-key");
-    await page.locator("#qwenKey").blur(); // commits key — and must adopt the SHOWN address with it
+    await page.locator("#qwenKey").blur(); // REFUSED: the shown address was restored, never confirmed
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe("https://old-host.example");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBeNull();
+    // confirming the address (any real input) commits the whole triple together
+    await page.fill("#qwenUrl", QWEN_URL);
+    await page.locator("#qwenUrl").blur();
     await page.click(".sheet:not([hidden]) .sheet-done");
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(QWEN_URL);
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-new-key");
@@ -537,6 +542,45 @@ test.describe("Qwen3-TTS server engine", () => {
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(QWEN_URL);
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBeNull(); // key waits for the address
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull();
+  });
+
+  test("dismissing the sheet never commits a refused restored address", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url); // the working server
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "https://half-typed.exa", v: "", k: "" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.fill("#qwenKey", "sk-x");
+    await page.locator("#qwenKey").blur(); // refuse path parks the caret in the Server field…
+    await page.keyboard.press("Escape"); // …and the dismissal blurs it — that blur must NOT commit
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(QWEN_URL);
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull();
+  });
+
+  test("a key refused beside an emptied address rides along when the SAME address is restored", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "", v: "", k: "" })); // address deleted mid-edit
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.fill("#qwenKey", "sk-new");
+    await page.locator("#qwenKey").blur(); // refused: shown address is empty
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBeNull();
+    await page.fill("#qwenUrl", QWEN_URL); // the user restores the SAME live address
+    await page.locator("#qwenUrl").blur(); // the parked key must ride along now
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-new");
+    await page.click("#pasteModeBtn");
+    await startRead(page);
+    await waitForFileMode(page);
+    const reqs = await getQwenRequests();
+    expect(reqs[reqs.length - 1].__auth).toBe("Bearer sk-new");
   });
 
   test("a fresh install commits no default voice, so a later draft voice can still be adopted", async ({ page, mockTTS }) => {

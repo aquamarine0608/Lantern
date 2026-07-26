@@ -414,6 +414,20 @@ test.describe("reading books aloud", () => {
     expect(Math.abs(after - before)).toBeLessThanOrEqual(2); // the first tick must hold, not re-centre
   });
 
+  test("chapter auto-advance updates an open Chapters sheet in place, keeping focus", async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS, { chunkSeconds: 1.5 });
+    await page.click('.sent[data-si="5"]'); // last sentence of chapter one — will auto-advance
+    await page.click("#tocBtn");
+    await page.locator("#tocList button").nth(2).focus(); // browsing the list mid-listen
+    await expect(page.locator("#rChapter")).toHaveText("Chapter Two", { timeout: 15_000 });
+    // the list was updated in place: the focused button survived, the marker moved
+    expect(await page.evaluate(() => document.activeElement.textContent)).toContain("Chapter Three");
+    await expect(page.locator("#tocList button").nth(1)).toHaveClass(/current/);
+    await expect(page.locator("#tocList button").nth(1)).toHaveAttribute("aria-current", "true");
+    expect(await page.evaluate(() => document.querySelectorAll('#tocList [aria-current]').length)).toBe(1);
+    await page.keyboard.press("Escape");
+  });
+
   test("neither the status line nor the download banner resizes the reading pane mid-gesture", async ({ page, mockTTS }) => {
     // first run: the tap starts the model download, which raises the banner — and
     // the status line gains the engine label. Neither may move #rScroll's edges.

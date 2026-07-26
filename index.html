@@ -1784,7 +1784,7 @@ function renderChapter() {
   }
   rContent.innerHTML = "";
   rContent.appendChild(frag);
-  if (!tocSheet.hidden) buildToc(); /* keep an open chapter list in step with auto-advance */
+  if (!tocSheet.hidden) markTocCurrent(); /* keep an open chapter list in step with auto-advance */
   updateReaderStatus();
 }
 
@@ -2232,6 +2232,21 @@ function buildToc() {
     tocList.appendChild(b);
   });
 }
+/* in place, never buildToc(): tocList.innerHTML = "" removes the focused chapter
+   button and focus falls to <body> INSIDE the open modal — every other region is
+   inert, so a keyboard/AT user browsing the list loses their place on every
+   auto-advance. The titles cannot change while the sheet is open (the only
+   book-swapping renderChapter caller, openReader, is always preceded by
+   readerTeardown/showView closing the sheets), so only the marker has to move. */
+function markTocCurrent() {
+  const btns = tocList.children;
+  for (let i = 0; i < btns.length; i++) {
+    const on = i === rd.ch;
+    btns[i].classList.toggle("current", on);
+    if (on) btns[i].setAttribute("aria-current", "true");
+    else btns[i].removeAttribute("aria-current");
+  }
+}
 
 /* ---------------- reading settings ---------------- */
 let readerFont = 19;
@@ -2296,19 +2311,36 @@ engineBtns.addEventListener("click", ev => {
    would never fire for it and the displayed address would never be used. The
    equality guards make a no-op blur free — a focus-and-leave never restarts the
    sentence being read, and a change-then-blur pair applies only once. */
+let qwenUrlTouched = false;
+qwenUrl.addEventListener("input", () => { qwenUrlTouched = true; });
 function commitQwenUrl() {
   const v = normalizeServerUrl(qwenUrl.value);
+  /* blur alone never promotes a script-restored address the user has not touched
+     this session — including the blur that immediately follows commitShownServer's
+     focus() (Done / Escape / backdrop restore focus via closeSheets, and an Engine
+     tap blurs on mousedown). Without this the refuse path would commit the very
+     address it refused, over a working server, and destroy the draft that held it.
+     The value stays in the field and the draft to be finished. */
+  if (!qwenUrlTouched && qwenServer && v !== qwenServer) { flushQwenFields(); return; }
   qwenUrl.value = v;
-  if (v !== qwenServer) {
+  let changed = v !== qwenServer;
+  if (changed) {
     qwenServer = v;
     try { localStorage.setItem("lantern.qwenUrl", v); } catch {}
-    /* the voice/key still showing in the fields were typed FOR this address (a
-       restored draft fires no change/blur of its own) — adopt them with it, never
-       against the address they replaced. In ordinary use these are no-ops. */
-    const dv = qwenVoice.value.trim() || "cherry", dk = qwenKey.value.trim();
-    if (dv !== qwenVoiceName) { qwenVoiceName = dv; try { localStorage.setItem("lantern.qwenVoice", dv); } catch {} }
-    if (dk !== qwenApiKey) { qwenApiKey = dk; qwenKey.value = dk; try { localStorage.setItem("lantern.qwenKey", dk); } catch {} }
-    clearErrorBanner(); /* "set your server first" is answered the moment an address is committed */
+  }
+  /* the voice/key still showing in the fields were typed FOR this address (a
+     restored draft fires no change/blur of its own) — adopt them with it, never
+     against the address they replaced. NOT gated on the address changing: a
+     sibling refused by commitShownServer parks in the draft, and restoring the
+     Server field to the address that is ALREADY live is the commonest way to
+     answer that refusal — gating here would discard the parked value for good.
+     v === qwenServer is exactly the case commitShownServer green-lights, so this
+     can never pair a key with a host it was not typed for. */
+  const dv = qwenVoice.value.trim() || "cherry", dk = qwenKey.value.trim();
+  if (dv !== qwenVoiceName) { qwenVoiceName = dv; changed = true; try { localStorage.setItem("lantern.qwenVoice", dv); } catch {} }
+  if (dk !== qwenApiKey) { qwenApiKey = dk; qwenKey.value = dk; changed = true; try { localStorage.setItem("lantern.qwenKey", dk); } catch {} }
+  if (changed) {
+    clearErrorBanner(); /* "set your server first" / "check the API key" are answered by a real commit */
     applyEngineUI();
     readerSettingsChanged();
   }
@@ -2324,8 +2356,6 @@ function commitQwenUrl() {
    along the moment an address is actually committed. normalizeServerUrl validates
    SHAPE, not completeness ("https://goo" passes), so a script-restored address the
    user never touched this session is never promoted as a side effect either. */
-let qwenUrlTouched = false;
-qwenUrl.addEventListener("input", () => { qwenUrlTouched = true; });
 function commitShownServer() {
   const v = normalizeServerUrl(qwenUrl.value);
   if (!v && !qwenServer) return true; /* all-fresh: nothing to adopt, nothing to protect */
