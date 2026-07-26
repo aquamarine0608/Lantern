@@ -125,6 +125,22 @@ test.describe("reader view", () => {
     expect(joined).toContain(source); // rejoining the spans reproduces the text byte-for-byte — no injected spaces
   });
 
+  test("Chinese curly-quote endings get no injected space; English keeps its real one", async ({ page }) => {
+    const zh = "他说：“今天天气很好。”然后他走了。";
+    const en = "He said, “Hello there.” Then he left.";
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "quotes.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "Quotes Book", chapters: [{ title: "引号", paras: [zh, en] }] }),
+    });
+    await page.click(".book");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await expect(page.locator(".sent").first()).toBeVisible();
+    const joined = await page.evaluate(() => [...document.querySelectorAll(".sent")].map((e) => e.textContent).join(""));
+    expect(joined).toContain("。”然后"); // ” after 。 is still CJK-final — no injected space
+    expect(joined).toContain(".” Then"); // the same ” after an English period keeps its real space
+  });
+
   test("Korean keeps its inter-word space at a length-cut seam (Hangul is not 'no-space' CJK)", async ({ page }) => {
     // >320 chars of spaced Hangul: the cap cuts at a space, the left span ends in a syllable,
     // and a NO_SPACE_AFTER class that wrongly covers Hangul would glue the two spans together

@@ -125,6 +125,8 @@ test.describe("reading books aloud", () => {
     await expect(page.locator("#bannerText")).toContainText("Something went wrong", { timeout: 15_000 });
     await expect(page.locator("#rIconPlay")).toBeVisible({ timeout: 15_000 });
     await expect(page.locator("#rChapter")).toHaveText("Chapter One"); // must NOT auto-advance
+    // the status line keeps the guidance even after the banner is later cleared
+    await expect(page.locator("#rStatus")).toContainText("tap play to retry");
 
     // recovery: synthesis works again, tap play
     await page.evaluate(() => { window.__TTS_MOCK__.streamFailAfter = -1; });
@@ -341,20 +343,20 @@ test.describe("reading books aloud", () => {
     });
     await page.click(".book");
     await expect(page.locator(".sent").first()).toBeVisible();
-    // pick the lowest sentence whose midpoint is still on screen: a forced
-    // re-centre would move it hundreds of px
-    const target = await page.evaluate(() => {
+    // pick a POINT on the lowest visible line: element-based clicking auto-scrolls
+    // multi-line spans into view, which is exactly the movement this test forbids
+    const pt = await page.evaluate(() => {
       const box = document.getElementById("rScroll").getBoundingClientRect();
-      let best = "0";
+      let best = null;
       for (const el of document.querySelectorAll(".sent")) {
         const r = el.getBoundingClientRect();
         const mid = (r.top + r.bottom) / 2;
-        if (mid > box.top + 10 && mid < box.bottom - 10) best = el.dataset.si;
+        if (mid > box.top + 10 && mid < box.bottom - 10) best = { x: r.left + Math.min(40, r.width / 2), y: mid };
       }
       return best;
     });
     const before = await page.evaluate(() => document.getElementById("rScroll").scrollTop);
-    await page.click(`.sent[data-si="${target}"]`);
+    await page.mouse.click(pt.x, pt.y);
     await page.waitForTimeout(200);
     const after = await page.evaluate(() => document.getElementById("rScroll").scrollTop);
     expect(Math.abs(after - before)).toBeLessThanOrEqual(2); // press 2 of a double-click must land on the same text
@@ -380,14 +382,36 @@ test.describe("reading books aloud", () => {
       .toBe("100%"); // the sentinel survived the round trip
   });
 
-  test("the silent-switch hint shows while the reader drives audio and clears on teardown", async ({ page, mockTTS }) => {
+  test("the silent-switch hint is present from book open and clears on teardown", async ({ page, mockTTS }) => {
     await openBookReady(page, mockTTS);
-    await expect(page.locator("#readerHint")).toBeHidden();
-    await page.click("#rPlay");
+    // shown at open, NOT at first play: un-hiding it mid-gesture would resize the
+    // scroller between the two presses of a double-click
     await expect(page.locator("#readerHint")).toBeVisible();
     await page.click("#backBtn");
     await expect(page.locator("#addBookBtn")).toBeVisible(); // hashchange → teardown is async
     expect(await page.evaluate(() => document.getElementById("readerHint").hidden)).toBe(true);
+  });
+
+  test("tapping an already-cached sentence never scrolls on the follow-along's first tick", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.8 });
+    const endless = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor ".repeat(35).trim();
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "endless2.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "Endless Two", chapters: [{ title: "Run-on", paras: [endless] }] }),
+    });
+    await page.click(".book");
+    await page.click("#rPlay");
+    await expect.poll(() => speakingSi(page), { timeout: 20_000 }).toBeGreaterThanOrEqual(3);
+    await page.click("#rPlay"); // pause — sentences 0..N are now all in rd.cache
+    await page.waitForTimeout(300);
+    await page.locator('.sent[data-si="1"]').scrollIntoViewIfNeeded();
+    await page.waitForTimeout(100);
+    const before = await page.evaluate(() => document.getElementById("rScroll").scrollTop);
+    await page.click('.sent[data-si="1"]'); // pure cache hit: audio schedules ~100 ms later
+    await page.waitForTimeout(400); // past the follow-along's first tick, before sentence 2
+    const after = await page.evaluate(() => document.getElementById("rScroll").scrollTop);
+    expect(Math.abs(after - before)).toBeLessThanOrEqual(2); // the first tick must hold, not re-centre
   });
 
   test("books read aloud fully offline after one online visit", async ({ page, mockTTS }) => {

@@ -415,6 +415,23 @@ test.describe("Qwen3-TTS server engine", () => {
     }
   });
 
+  test("the paste view can open Voice settings to fix a server error in place", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript(() => localStorage.setItem("lantern.engine", "qwen"));
+    await page.goto("/#paste");
+    await startRead(page);
+    await expect(page.locator("#bannerText")).toContainText("Set your Qwen3-TTS server first");
+    // the error's instruction must not be a dead end — Voice settings open right here
+    await page.click("#pasteVoiceBtn");
+    await expect(page.locator("#setSheet")).toBeVisible();
+    await page.fill("#qwenUrl", QWEN_URL);
+    await page.locator("#qwenUrl").blur();
+    await expect(page.locator("#banner")).toBeHidden(); // committing the address clears the error
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await startRead(page);
+    await waitForFileMode(page);
+  });
+
   test("without a server address, reading explains what to do instead of hanging", async ({ page }) => {
     await page.goto("/");
     await page.click("#libVoiceBtn");
