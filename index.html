@@ -76,7 +76,10 @@
   .voice-wrap::after { content: "▾"; position: absolute; right: 12px; color: var(--mist); font-size: 12px; pointer-events: none; }
   select {
     appearance: none; -webkit-appearance: none; width: 100%; background: transparent; border: 0; outline: none;
-    color: var(--chalk); font-family: var(--body); font-size: 15px; padding: 12px 30px 12px 13px;
+    /* 16px, not 15 — same rule as .cfg-input: with pinch-zoom re-enabled, iOS
+       auto-zooms on focus of ANY sub-16px form control, <select> included, and
+       never zooms back out when the picker is dismissed */
+    color: var(--chalk); font-family: var(--body); font-size: 16px; padding: 12px 30px 12px 13px;
   }
   .speeds { display: flex; background: var(--page); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
   .speeds button {
@@ -152,12 +155,15 @@
   .lib-actions { display: flex; gap: 10px; flex-wrap: wrap; }
   .lib-actions .primary { flex: 1; width: auto; }
   .shelf { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
-  .book { background: var(--page); border: 1px solid var(--line); border-radius: 14px; padding: 10px; cursor: pointer; display: flex; flex-direction: column; gap: 7px; }
+  .book { position: relative; background: var(--page); border: 1px solid var(--line); border-radius: 14px; padding: 10px; cursor: pointer; display: flex; flex-direction: column; gap: 7px; }
   /* the open affordance is a real <button> so books are keyboard/AT-operable —
      styled to be layout-invisible inside the card */
   .book-open { display: flex; flex-direction: column; gap: 7px; width: 100%;
                background: none; border: 0; padding: 0; margin: 0;
                color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  /* stretch the button's hit area over the whole card (padding ring + gaps) so no
+     part of a card that advertises cursor:pointer is dead — Remove lifts above it */
+  .book-open::after { content: ""; position: absolute; inset: 0; border-radius: 14px; }
   .book .cover { aspect-ratio: 2 / 3; border-radius: 8px; overflow: hidden; background: linear-gradient(160deg, #223049, #141d2c); display: flex; align-items: center; justify-content: center; }
   .book .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .book .cover .initials { font-family: var(--serif); font-style: italic; font-size: 36px; color: var(--lamp); opacity: .85; }
@@ -165,7 +171,8 @@
   .b-author { font-size: 12px; color: var(--mist); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .b-progress { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
   .b-progress i { display: block; height: 100%; background: var(--lamp); }
-  .b-del { background: none; border: 0; color: var(--mist); font-size: 12px; padding: 2px 0; cursor: pointer; text-align: left; }
+  /* z-lifted above the .book-open::after overlay; padded to a real touch target */
+  .b-del { position: relative; z-index: 1; background: none; border: 0; color: var(--mist); font-size: 12px; padding: 10px 0; min-height: 36px; cursor: pointer; text-align: left; }
   .b-del.confirm { color: var(--ember); font-weight: 600; }
   .lib-empty { color: var(--mist); font-size: 14px; text-align: center; padding: 34px 12px; line-height: 1.6; }
 
@@ -216,6 +223,12 @@
   .book-open:focus-visible, .b-del:focus-visible, .voice-wrap select:focus-visible,
   .cfg-input:focus-visible, .speeds button:focus-visible, .toc-list button:focus-visible,
   .sheet-done:focus-visible { outline: 2px solid var(--lamp); outline-offset: 2px; }
+  /* .speeds is overflow:hidden so the amber .on segment respects the pill's radius —
+     that clip also eats an outward ring, whose every edge sits on the container's
+     padding box. Draw this one inside the button instead, and flip it to ink on the
+     amber .on segment so it stays visible there. */
+  .speeds button:focus-visible { outline-offset: -3px; }
+  .speeds button.on:focus-visible { outline-color: var(--ink); }
 </style>
 </head>
 <body>
@@ -521,11 +534,27 @@ function excerpt(text, maxWords, maxChars = 60) {
 }
 function setModelState(cls, txt) { modelState.className = "model-state " + cls; modelStateText.textContent = txt; }
 /* clear-then-set: assigning the SAME string can be deduped by AT, and re-picking
-   the same bad file must announce again rather than fall silent the second time */
+   the same bad file must announce again rather than fall silent the second time.
+   Messages are COALESCED, not overwritten: an error banner and the reader's park
+   line are raised in the same task (ensureEngineReady throws → readerPlayFrom's
+   catch; finish()'s silent-book park), so both rAF callbacks run in one frame
+   batch and a plain overwrite would render only the last — the diagnostic would
+   never exist in a rendered frame at all. */
+let announceQueue = [], announceRaf = 0;
 function announce(msg) {
   if (!msg) return;
+  announceQueue.push(msg);
   a11yAlert.textContent = "";
-  requestAnimationFrame(() => { a11yAlert.textContent = msg; });
+  if (announceRaf) return;
+  announceRaf = requestAnimationFrame(() => {
+    announceRaf = 0;
+    a11yAlert.textContent = announceQueue.join(" · ");
+    announceQueue = [];
+  });
+}
+function flushAnnounceQueue() { /* drop anything not yet spoken */
+  announceQueue = [];
+  if (announceRaf) { cancelAnimationFrame(announceRaf); announceRaf = 0; }
 }
 function showBanner(txt, { bar = false, error = false } = {}) {
   banner.hidden = false; banner.classList.toggle("error", error);
@@ -538,7 +567,7 @@ function showBanner(txt, { bar = false, error = false } = {}) {
      AT virtual cursor. Errors must reach a live region or they do not exist. */
   if (error) announce(bannerText.textContent);
 }
-function hideBanner() { banner.hidden = true; a11yAlert.textContent = ""; /* a cleared error must not be re-read by a cursor sweep */ }
+function hideBanner() { banner.hidden = true; flushAnnounceQueue(); a11yAlert.textContent = ""; /* a cleared error must not be re-read by a cursor sweep */ }
 /* an error reports on ONE attempt, in ONE view, under ONE engine — and the banner
    has no dismiss control, so anything that invalidates it must clear it */
 function clearErrorBanner() { if (!banner.hidden && banner.classList.contains("error")) hideBanner(); }
@@ -1772,10 +1801,12 @@ async function readerPlayFrom(si) {
   /* commit the target BEFORE the engine warm-up: rd.si is the reader's only record
      of "where we are", and ensureEngineReady() can park below for a whole model
      load. Skips (rd.si + d), a settings change (readerPlayFrom(rd.si)), the status
-     line and saveReaderProgress would all act on the PREVIOUS sentence otherwise. */
-  rd.si = si;
+     line and saveReaderProgress would all act on the PREVIOUS sentence otherwise.
+     highlightSentence moves the marker WITH it (and repaints the status line):
+     an engine-failure catch below only fixes the icon and status, so a bare
+     rd.si write would strand the amber highlight on the previous sentence. */
+  highlightSentence(si, { force: true });
   setReaderIcon("busy");
-  updateReaderStatus(); /* rd.started && !rd.genDone → truthful "generating…" line, not "tap play to listen" */
   (async () => {
   await ensureReaderAudio();
   if (myToken !== rd.token) return;
@@ -1985,6 +2016,11 @@ function readerSettingsChanged() {
 rPlay.addEventListener("click", () => readerToggle());
 rPrev.addEventListener("click", () => readerSkip(-1));
 rNext.addEventListener("click", () => readerSkip(1));
+/* the si the last single click started a run from, and where we were before it —
+   the FIRST click of a double-click carries detail 1 with a still-collapsed
+   selection (the word is only selected on the second mousedown), so it passes
+   both guards below and its run must be undone when the pair completes */
+let clickRunSi = -1, preClickSi = 0;
 rContent.addEventListener("click", e => {
   const el = e.target.closest(".sent");
   if (!el) return;
@@ -1992,13 +2028,32 @@ rContent.addEventListener("click", e => {
      at that span, and readerPlayFrom is not a passive seek — it starts audio,
      publishes a playing transport and can kick off the 90 MB model download.
      Copying a phrase must never start a reading. e.detail > 1 drops the second
-     click of a double-click, which would otherwise tear down the run the first
-     one just started. (A plain tap always has a collapsed selection by click time,
-     and a programmatic el.click() has detail 0 — both still read.) */
+     click of a double-click. (A plain tap always has a collapsed selection by
+     click time, and a programmatic el.click() has detail 0 — both still read.) */
   if (e.detail > 1) return;
   const sel = window.getSelection();
-  if (sel && !sel.isCollapsed && rContent.contains(sel.anchorNode)) return;
-  readerPlayFrom(parseInt(el.dataset.si, 10));
+  if (sel && !sel.isCollapsed && rContent.contains(sel.anchorNode)) { clickRunSi = -1; return; }
+  preClickSi = rd.si;
+  clickRunSi = parseInt(el.dataset.si, 10);
+  readerPlayFrom(clickRunSi);
+});
+/* double-click-to-look-up: park the run the first click started and put the
+   position back where it was — selecting a word must leave the reader as it
+   found it. (Undo on dblclick beats predicting it on click 1: no added latency
+   for a plain tap, and dblclick fires right after the already-dropped second
+   click.) An already-started model download keeps running and becomes a warm
+   cache, matching every other cancel path. */
+rContent.addEventListener("dblclick", e => {
+  if (clickRunSi < 0 || !e.target.closest(".sent")) return;
+  const back = preClickSi;
+  clickRunSi = -1;
+  readerStopPlayback(); /* bumps rd.token — fences readerPlayFrom's async body */
+  rd.playing = false; rd.started = false;
+  if (audioEl) audioEl.pause();
+  if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+  setReaderIcon("play");
+  highlightSentence(back, { scroll: false }); /* also restores rd.si */
+  updateReaderStatus("tap play to resume");
 });
 backBtn.addEventListener("click", () => { location.hash = "#library"; });
 
@@ -2216,12 +2271,23 @@ async function openReader(id) {
   rd.book = book;
   rd.ch = Math.min((prog && prog.ch) || 0, book.chapters.length - 1);
   renderChapter();
-  const si = Math.min((prog && prog.si) || 0, Math.max(0, rd.sentences.length - 1));
-  rd.si = si; rd.hl = -1; rd.started = false;
-  if (si > 0) highlightSentence(si, { force: true });
+  /* readerChapterDone parks a finished book one PAST the last sentence
+     (si === sentences.length): that sentinel is what makes readerProgressPct
+     return exactly 1, and what readerToggle/readerSkip test for "restart the
+     chapter". Clamping it to length-1 would silently demote a completed book
+     on the very next progress write — merely OPENING a finished book would
+     destroy its 100%. Clamp to length, not length-1. */
+  const si = Math.min((prog && prog.si) || 0, rd.sentences.length);
+  rd.hl = -1; rd.started = false;
+  /* the sentinel has no span of its own — position on the last real sentence,
+     then put the sentinel back, since highlightSentence assigns rd.si */
+  if (si > 0) highlightSentence(Math.min(si, Math.max(0, rd.sentences.length - 1)), { force: true });
   else rScroll.scrollTop = 0;
+  rd.si = si;
   setReaderIcon("play");
-  updateReaderStatus(prog && (prog.si > 0 || prog.ch > 0) ? "tap play to resume" : "tap play to listen");
+  updateReaderStatus(rd.sentences.length && si >= rd.sentences.length
+    ? "the end"
+    : (prog && (prog.si > 0 || prog.ch > 0) ? "tap play to resume" : "tap play to listen"));
 }
 
 window.addEventListener("pagehide", () => saveReaderProgress());

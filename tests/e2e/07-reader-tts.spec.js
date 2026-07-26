@@ -291,6 +291,46 @@ test.describe("reading books aloud", () => {
     await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBe(1);
   });
 
+  test("reopening a finished book keeps its 100% progress", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "single.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "One Chapter", chapters: [{ title: "Only", paras: ["First line here. Second line here."] }] }),
+    });
+    await page.click(".book");
+    await page.click('.sent[data-si="2"]'); // last sentence — finishes the book
+    await expect(page.locator("#rStatus")).toContainText("the end", { timeout: 15_000 });
+    await page.click("#backBtn");
+    // renderLibrary is async — poll until the re-rendered shelf shows the bar
+    await expect
+      .poll(() => page.evaluate(() => document.querySelector(".b-progress i").style.width), { timeout: 5_000 })
+      .toBe("100%");
+
+    // merely reopening must not demote the end-of-book sentinel to length-1
+    await page.click(".book");
+    await expect(page.locator("#rStatus")).toContainText("the end");
+    await page.click("#backBtn");
+    await expect
+      .poll(() => page.evaluate(() => document.querySelector(".b-progress i").style.width), { timeout: 5_000 })
+      .toBe("100%");
+
+    // and play on the reopened finished book restarts from the top
+    await page.click(".book");
+    await page.click("#rPlay");
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBe(0);
+  });
+
+  test("double-clicking a word stops the run the first click started", async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS, { chunkSeconds: 1.5 });
+    await page.locator('.sent[data-si="1"]').dblclick();
+    await page.waitForTimeout(500);
+    // the look-up gesture must leave the reader parked where it was, not playing
+    await expect(page.locator("#rIconPlay")).toBeVisible();
+    await expect(page.locator("#rStatus")).toContainText("tap play to resume");
+    expect(await page.evaluate(() => document.querySelector("audio").paused)).toBe(true);
+  });
+
   test("books read aloud fully offline after one online visit", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5 });
     await page.goto("/");

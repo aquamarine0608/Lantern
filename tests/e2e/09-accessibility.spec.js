@@ -57,6 +57,53 @@ test.describe("accessibility and input", () => {
     await expect(page.locator('#speeds button[data-s="1"]')).toHaveAttribute("aria-pressed", "false");
   });
 
+  test("keyboard focus on the segmented buttons draws inside the clipping pill", async ({ page }) => {
+    await page.goto("/#paste");
+    // .speeds is overflow:hidden — an outward ring is fully clipped, so the rule
+    // must draw the ring inside the button (verified by pixel-diff in review; the
+    // stylesheet pin keeps the fix from being silently reverted)
+    const ok = await page.evaluate(() => {
+      for (const s of document.styleSheets) {
+        let rules;
+        try { rules = s.cssRules; } catch { continue; } // the fonts stylesheet is cross-origin
+        for (const r of rules)
+          if (r.selectorText === ".speeds button:focus-visible" && r.style.outlineOffset === "-3px") return true;
+      }
+      return false;
+    });
+    expect(ok).toBe(true);
+    const sel16 = await page.locator("#voice").evaluate((el) => getComputedStyle(el).fontSize);
+    expect(sel16).toBe("16px"); // sub-16px form controls re-trigger iOS focus auto-zoom
+  });
+
+  test("an error and the park status are both announced — neither clobbers the other", async ({ page }) => {
+    await page.goto("/");
+    await importEpub(page);
+    await page.click(".book");
+    await page.click("#fontBtn");
+    await page.click('#engineBtns button[data-e="qwen"]'); // no server URL entered
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click("#rPlay");
+    await expect(page.locator("#bannerText")).toContainText("Set your Qwen3-TTS server first");
+    await expect
+      .poll(() => page.evaluate(() => document.getElementById("a11yAlert").textContent), { timeout: 5_000 })
+      .toContain("Qwen3-TTS server");
+    const announced = await page.evaluate(() => document.getElementById("a11yAlert").textContent);
+    expect(announced).toContain("tap play to retry"); // the park line coalesces with the error
+  });
+
+  test("the whole book card opens the book — including the padding ring", async ({ page }) => {
+    await page.goto("/");
+    await importEpub(page);
+    const box = await page.locator(".book").boundingBox();
+    await page.mouse.click(box.x + 3, box.y + box.height / 2); // inside the 10px padding ring
+    await expect(page.locator("#viewReader")).toBeVisible();
+    // and Remove still works above the stretched hit area
+    await page.click("#backBtn");
+    await page.click(".book .b-del");
+    await expect(page.locator(".book .b-del")).toHaveText("Really remove?");
+  });
+
   test("the settings-sheet speed and engine buttons keep a real touch height", async ({ page }) => {
     await page.goto("/");
     await importEpub(page);

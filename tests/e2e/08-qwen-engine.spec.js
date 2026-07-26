@@ -348,6 +348,20 @@ test.describe("Qwen3-TTS server engine", () => {
     await expect(page.locator("#banner")).toBeHidden();
   });
 
+  test("a tapped sentence is highlighted immediately, even when the engine fails to warm up", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5 });
+    await page.goto("/");
+    await importEpub(page);
+    await page.click(".book");
+    await page.click("#fontBtn");
+    await page.click('#engineBtns button[data-e="qwen"]'); // no server URL entered
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click('.sent[data-si="2"]');
+    await expect(page.locator("#bannerText")).toContainText("Set your Qwen3-TTS server first");
+    // the amber marker must sit on the tapped sentence — where rd.si and the retry target are
+    await expect(page.locator(".sent.speaking")).toHaveAttribute("data-si", "2");
+  });
+
   test("typing in the server field never disturbs the chapter being read", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 1.5 });
     await page.goto("/");
