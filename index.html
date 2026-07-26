@@ -2316,15 +2316,27 @@ function commitQwenUrl() {
 }
 /* the three fields are ONE config, and a draft-restored Server field is pristine —
    change/blur never fire for it. Committing the key or voice alone would pair it
-   with the PREVIOUS address while the sheet shows the new one. Adopt the shown
-   address alongside it — but only when it normalizes to a real URL, so a
-   half-deleted one still cannot wipe a working server. */
+   with the PREVIOUS address while the sheet shows the new one. So a sibling commit
+   first settles the address, and REFUSES THE WHOLE COMMIT when it cannot: a key
+   committed while the shown address is emptied/degenerate (or restored-but-never-
+   confirmed) would silently start travelling to the previous host, persistently.
+   Refused values keep showing in their fields and stay in the draft — they ride
+   along the moment an address is actually committed. normalizeServerUrl validates
+   SHAPE, not completeness ("https://goo" passes), so a script-restored address the
+   user never touched this session is never promoted as a side effect either. */
+let qwenUrlTouched = false;
+qwenUrl.addEventListener("input", () => { qwenUrlTouched = true; });
 function commitShownServer() {
   const v = normalizeServerUrl(qwenUrl.value);
-  if (v && v !== qwenServer) commitQwenUrl();
+  if (!v && !qwenServer) return true; /* all-fresh: nothing to adopt, nothing to protect */
+  if (v === qwenServer) return true; /* the shown address IS the live one */
+  if (!v) return false; /* emptied/degenerate over a working server — refuse the siblings too */
+  if (!qwenUrlTouched) { qwenUrl.focus(); return false; } /* restored draft, unconfirmed — point at it */
+  commitQwenUrl();
+  return true;
 }
 function commitQwenVoice() {
-  commitShownServer();
+  if (!commitShownServer()) { flushQwenFields(); return; }
   const v = qwenVoice.value.trim() || "cherry";
   if (v !== qwenVoiceName) {
     qwenVoiceName = v;
@@ -2335,7 +2347,7 @@ function commitQwenVoice() {
   flushQwenFields();
 }
 function commitQwenKey() {
-  commitShownServer();
+  if (!commitShownServer()) { flushQwenFields(); return; }
   const v = qwenKey.value.trim();
   qwenKey.value = v;
   if (v !== qwenApiKey) {
@@ -2400,11 +2412,21 @@ try {
      shown address IS the live one (true in every all-fresh case: the block above
      sets qwenUrl.value = qwenServer when it adopts). */
   const draftServerIsLive = normalizeServerUrl(qwenUrl.value) === qwenServer;
-  if (draftServerIsLive && hadVoice === null && qwenVoice.value.trim()) {
-    qwenVoiceName = qwenVoice.value.trim();
+  /* only a value that DIFFERS is an adoption. Writing the untouched default here
+     would make lantern.qwenVoice exist from the first load of a fresh install,
+     and hadVoice === null — "the user never committed a voice" — could never be
+     true again, killing this branch for every real (second-and-later) load. */
+  const shownVoice = qwenVoice.value.trim();
+  if (draftServerIsLive && hadVoice === null && shownVoice && shownVoice !== qwenVoiceName) {
+    qwenVoiceName = shownVoice;
     try { localStorage.setItem("lantern.qwenVoice", qwenVoiceName); } catch {}
   }
-  if (draftServerIsLive && hadKey === null && qwenKey.value.trim()) {
+  /* !hadKey, not === null: "" is a committed ABSENCE of a key (clearing persists it),
+     not a working value to protect — a null-only test would refuse every later
+     draft-restored key forever, leaving the 401's "check the API key" pointing at a
+     password field that already shows the right one. draftServerIsLive above still
+     keeps a key from ever pairing with a different address. */
+  if (draftServerIsLive && !hadKey && qwenKey.value.trim()) {
     qwenApiKey = qwenKey.value.trim();
     qwenKey.value = qwenApiKey;
     try { localStorage.setItem("lantern.qwenKey", qwenApiKey); } catch {}

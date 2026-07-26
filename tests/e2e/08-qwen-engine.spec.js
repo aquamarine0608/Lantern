@@ -498,6 +498,70 @@ test.describe("Qwen3-TTS server engine", () => {
     expect(reqs[reqs.length - 1].__auth).toBe("Bearer sk-new-key");
   });
 
+  test("a key committed beside an EMPTIED address never re-targets the live server", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url); // a WORKING committed server
+      localStorage.setItem("lantern.qwenKey", "sk-old");
+      // interrupted edit: the address was deleted, the app suspended before blur
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "", v: "cherry", k: "sk-old" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.fill("#qwenKey", "sk-for-the-new-host");
+    await page.locator("#qwenKey").blur(); // must refuse: the shown address is empty
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-old"); // not adopted
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(QWEN_URL); // not wiped
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull(); // edit kept
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click("#pasteModeBtn");
+    await startRead(page);
+    await waitForFileMode(page);
+    const reqs = await getQwenRequests();
+    expect(reqs[reqs.length - 1].__auth).toBe("Bearer sk-old"); // the new host's key never reached the old one
+  });
+
+  test("a sibling commit never promotes a restored address the user did not touch", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url); // the working server
+      // a half-typed address parked in the draft — normalizeServerUrl can't tell it's incomplete
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "https://half-typed.exa", v: "", k: "" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.fill("#qwenKey", "sk-whatever");
+    await page.locator("#qwenKey").blur(); // must NOT silently retarget the server as a side effect
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(QWEN_URL);
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBeNull(); // key waits for the address
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull();
+  });
+
+  test("a fresh install commits no default voice, so a later draft voice can still be adopted", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    // the boot adoption must not write the untouched default and poison its own gate
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenVoice"))).toBeNull();
+  });
+
+  test("a committed-then-cleared key never blocks adopting a drafted replacement", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", ""); // committed ABSENCE — the user cleared it once
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "", k: "sk-new" }));
+    }, QWEN_URL);
+    await page.goto("/#paste");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-new"); // adopted
+    await startRead(page);
+    await waitForFileMode(page);
+    const reqs = await getQwenRequests();
+    expect(reqs[reqs.length - 1].__auth).toBe("Bearer sk-new");
+  });
+
   test("changing the voice mid-paste-reading finishes the session in the voice it started with", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.goto("/");
