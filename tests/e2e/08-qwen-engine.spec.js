@@ -963,4 +963,52 @@ test.describe("Qwen3-TTS server engine", () => {
     await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live"); // shown ≠ used
   });
+
+  test("the hold banner survives the reader restart the same gesture triggers", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "kokoro"); // reading starts on-device
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "", k: "sk-shadow", b: url }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await importEpub(page);
+    await page.click(".book");
+    await page.click("#rPlay");
+    await expect(page.locator(".sent.speaking")).toHaveCount(1, { timeout: 15_000 });
+    await page.click("#fontBtn"); // reader settings — engine kokoro, shadow report bails
+    await expect(page.locator("#banner")).toBeHidden();
+    // switching the engine restarts the PLAYING reader (readerSettingsChanged →
+    // readerPlayFrom) and THEN raises the hold banner — the restart's async
+    // clearErrorBanner used to wipe it milliseconds later
+    await page.click('#engineBtns button[data-e="qwen"]');
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    await page.waitForTimeout(1300); // the restart's warm-up settles in here
+    await expect(page.locator("#banner")).toBeVisible();
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
+  });
+
+  test("emptying the Server field never releases a key that was typed beside no address", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-A");
+      // a pristine key drafted with NO address shown — the "" wildcard stamp
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "", v: "", k: "sk-evil", b: "" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    // the user genuinely commits an EMPTY address ("" === "" must not count as
+    // a provenance match — the old gate adopted the key and deleted the draft)
+    await page.fill("#qwenUrl", "x");
+    await page.fill("#qwenUrl", "");
+    await page.locator("#qwenUrl").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(""); // the emptying itself commits
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-A"); // the key does NOT ride
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull(); // edit kept
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+  });
 });

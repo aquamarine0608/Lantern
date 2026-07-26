@@ -597,6 +597,8 @@ function flushAnnounceQueue() { /* drop anything not yet spoken */
   announceQueue = [];
   if (announceRaf) { cancelAnimationFrame(announceRaf); announceRaf = 0; }
 }
+let errBannerSeq = 0; /* bumped by every ERROR banner: an async clear may only ever
+                         hide the message that was standing when its run started */
 function showBanner(txt, { bar = false, error = false } = {}) {
   banner.hidden = false; banner.classList.toggle("error", error);
   bannerText.innerHTML = txt; bannerBar.hidden = !bar;
@@ -606,7 +608,7 @@ function showBanner(txt, { bar = false, error = false } = {}) {
   if (error && tocSheet.hidden && setSheet.hidden) banner.scrollIntoView({ block: "nearest" });
   /* scrollIntoView is a sighted-only affordance: it moves neither DOM focus nor the
      AT virtual cursor. Errors must reach a live region or they do not exist. */
-  if (error) announce(bannerText.textContent);
+  if (error) { errBannerSeq++; announce(bannerText.textContent); }
 }
 function hideBanner() { banner.hidden = true; flushAnnounceQueue(); a11yAlert.textContent = ""; /* a cleared error must not be re-read by a cursor sweep */ }
 /* an error reports on ONE attempt, in ONE view, under ONE engine — and the banner
@@ -1958,6 +1960,13 @@ async function readerPlayFrom(si, { scroll = true } = {}) {
   const myToken = rd.token;
   const myAbort = new AbortController();
   rd.abortCtl = myAbort;
+  /* the callers that restart the reader raise their qwen-hold banner AFTER
+     readerSettingsChanged() returns (setEngine → reportQwenShadow; commitQwenUrl →
+     refuseSibling), i.e. while the IIFE below is parked on ensureReaderAudio().
+     A blind clear there would destroy a message this run never superseded — and
+     hideBanner would swallow its role=alert announcement with it. Capture the
+     identity of the error standing NOW, before the first await. */
+  const bannerAtStart = errBannerSeq;
   rd.playing = true; rd.started = true;
   /* commit the target BEFORE the engine warm-up: rd.si is the reader's only record
      of "where we are", and ensureEngineReady() can park below for a whole model
@@ -1989,7 +1998,12 @@ async function readerPlayFrom(si, { scroll = true } = {}) {
   }
   if (myToken !== rd.token) return;
 
-  clearErrorBanner();
+  /* only the error THIS run superseded — never a newer one, and never a standing
+     qwen hold (a chapter auto-advance minutes later must not eat an unanswered
+     "Not saved yet"; the settings commits clear it themselves when it IS answered) */
+  if (errBannerSeq === bannerAtStart &&
+      bannerText.innerHTML !== QWEN_HOLD && bannerText.innerHTML !== QWEN_HOLD_STALE &&
+      bannerText.innerHTML !== QWEN_HOLD_DRAFT) clearErrorBanner();
   setReaderIcon(rd.playing ? "pause" : "play"); /* a pause tap during the awaits must stick */
   setReaderMediaSession(rd.playing);
   cancelAnimationFrame(rd.raf);
@@ -2181,7 +2195,18 @@ function readerSettingsChanged() {
   rd.cache.clear();
   if (!rd.book || !rd.started) return;
   if (rd.playing) readerPlayFrom(rd.si);
-  else { readerStopPlayback(); rd.started = false; updateReaderStatus("tap play to resume"); } /* park: the old voice is already scheduled — resume restarts with the new one */
+  else { /* park: the old voice is already scheduled — resume restarts with the new one */
+    readerStopPlayback(); rd.started = false;
+    /* the run being torn down can still be wearing the busy pulse: an interruption
+       during the engine warm-up sets rd.playing = false, and ctx.onstatechange
+       deliberately leaves the icon alone while "working" is set, trusting
+       readerPlayFrom's post-warm-up settle — which the token bump above just
+       fenced off. Park the icon and transport here, like every other park path. */
+    setReaderIcon("play");
+    if (audioEl) audioEl.pause();
+    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+    updateReaderStatus("tap play to resume");
+  }
 }
 
 rPlay.addEventListener("click", () => readerToggle());
@@ -2474,11 +2499,13 @@ function commitQwenUrl() {
        the ADDRESS. A sibling the user typed this session travels with their own act
        whatever the stamp says; a sibling only a SCRIPT put in the field (the boot
        draft restore) rides only if ITS OWN stamp names this very address — never on
-       the "" wildcard, and never against a host it was not typed for. Otherwise a
-       working key would be overwritten, invisibly (type=password), by the draft the
-       boot block just refused, and the flush below would delete the only copy. */
-    const rideV = qwenVoiceTouched || qwenVoiceBase === v;
-    const rideK = qwenKeyTouched || qwenKeyBase === v;
+       the "" wildcard, INCLUDING when the address being committed is itself "" (an
+       emptied or scheme-only Server field, where a bare === would compare "" to ""
+       and let the held key through). Otherwise a working key would be overwritten,
+       invisibly (type=password), by the draft the boot block just refused, and the
+       flush below would delete the only copy. */
+    const rideV = qwenVoiceTouched || (!!qwenVoiceBase && qwenVoiceBase === v);
+    const rideK = qwenKeyTouched || (!!qwenKeyBase && qwenKeyBase === v);
     if (dv !== qwenVoiceName) {
       if (rideV) { qwenVoiceName = dv; changed = true; try { localStorage.setItem("lantern.qwenVoice", dv); } catch {} }
       else { heldSib = true; if (qwenVoiceBase && qwenVoiceBase !== v) heldStale = true; }

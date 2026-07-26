@@ -509,4 +509,32 @@ test.describe("reading books aloud", () => {
     await page.click("#rPlay");
     await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThan(0);
   });
+
+  test("a settings change parked during an interrupted warm-up settles the play button", async ({ page, mockTTS }) => {
+    await page.addInitScript(() => {
+      const OrigAC = window.AudioContext;
+      window.AudioContext = class extends OrigAC {
+        constructor(...a) { super(...a); window.__lastCtx = this; }
+      };
+    });
+    await openBookReady(page, mockTTS, { loadDelay: 3000 });
+    await page.click("#rPlay"); // busy warm-up begins
+    await page.waitForFunction(() => window.__lastCtx && window.__lastCtx.state === "running");
+    // an OS interruption suspends the context mid-warm-up: rd.playing goes false,
+    // but the icon deliberately stays "busy" until the warm-up settles
+    await page.evaluate(() => window.__lastCtx.suspend());
+    await page.waitForFunction(() => window.__lastCtx.state === "suspended");
+    // a settings change now parks the run — the park must settle the icon too,
+    // not leave a pulsing "Pause" button on a reader that says "tap play"
+    await page.click("#fontBtn");
+    await page.click('#rSpeeds button[data-s="1.2"]');
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await expect(page.locator("#rPlay")).toHaveAttribute("aria-label", "Play");
+    await expect(page.locator("#rPlay")).not.toHaveClass(/working/);
+    await expect(page.locator("#rStatus")).toContainText("tap play to resume");
+    expect(await page.evaluate(() => navigator.mediaSession.playbackState)).toBe("paused");
+    // and the settled button actually starts playback again
+    await page.click("#rPlay");
+    await expect.poll(() => speakingSi(page), { timeout: 20_000 }).toBeGreaterThanOrEqual(0);
+  });
 });
