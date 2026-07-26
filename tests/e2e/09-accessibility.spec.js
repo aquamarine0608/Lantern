@@ -114,6 +114,21 @@ test.describe("accessibility and input", () => {
     await expect(cfg.getByLabel("API key")).toHaveAttribute("id", "qwenKey"); // was announced as "optional"
   });
 
+  test("an unconfirmed server draft never hijacks focus or Tab order", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", "http://127.0.0.1:4174");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "https://other.example", v: "", k: "" }));
+    });
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.locator("#qwenUrl").focus();
+    await page.keyboard.press("Tab");
+    expect(await page.evaluate(() => document.activeElement.id)).toBe("qwenVoice");
+    await page.keyboard.press("Tab"); // used to bounce back to qwenUrl forever
+    expect(await page.evaluate(() => document.activeElement.id)).toBe("qwenKey");
+  });
+
   test("the settings-sheet speed and engine buttons keep a real touch height", async ({ page }) => {
     await page.goto("/");
     await importEpub(page);

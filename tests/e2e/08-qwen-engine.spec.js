@@ -583,6 +583,51 @@ test.describe("Qwen3-TTS server engine", () => {
     expect(reqs[reqs.length - 1].__auth).toBe("Bearer sk-new");
   });
 
+  test("a key typed beside another host's address never commits when the LIVE address is restored", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "https://new-box.example", v: "", k: "" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.fill("#qwenKey", "sk-new-box"); // typed while the NEW box's address is shown
+    await page.locator("#qwenKey").blur(); // refused — and the refusal is now announced
+    await expect(page.locator("#bannerText")).toContainText("Not saved yet");
+    await page.fill("#qwenUrl", QWEN_URL); // the user restores the LIVE address instead
+    await page.locator("#qwenUrl").blur();
+    // the key was typed for the other host: it must NOT pair with the live one
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull();
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click("#pasteModeBtn");
+    await startRead(page);
+    await waitForFileMode(page);
+    const reqs = await getQwenRequests();
+    expect(reqs[reqs.length - 1].__auth).toBe("Bearer sk-live");
+  });
+
+  test("a focus-and-leave of the Server field never promotes draft values over working ones", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenVoice", "ethan");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      // a mid-edit draft for the SAME address, holding a truncated key
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "cherry", k: "sk-trunc" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.locator("#qwenUrl").focus();
+    await page.locator("#qwenUrl").blur(); // zero keystrokes — the blur contract says no-op
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenVoice"))).toBe("ethan");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull();
+  });
+
   test("a fresh install commits no default voice, so a later draft voice can still be adopted", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.goto("/");

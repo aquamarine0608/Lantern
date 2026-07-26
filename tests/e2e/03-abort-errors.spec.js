@@ -142,6 +142,29 @@ test.describe("stopping and error paths", () => {
     expect(Math.abs(duration - 1.0)).toBeLessThan(0.1); // only the new text — nothing interleaved
   });
 
+  test("the silent-switch hint stays up until the live stream is swapped for the file", async ({ page, mockTTS }) => {
+    // fast generation, slow audio: done-live lasts ~6 s and the element is STILL fed
+    // by the muted-under-silent-switch MediaStream for all of it
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 3.0 });
+    await page.goto("/#paste");
+    await startRead(page, "One. Two.");
+    await expect(page.locator("#statusLine")).toContainText("ready to save", { timeout: 10_000 });
+    await expect(page.locator("#playerHint")).toBeVisible(); // the condition it explains persists
+    await waitForFileMode(page, 20_000);
+    await expect(page.locator("#playerHint")).toBeHidden(); // ends exactly at the handoff
+  });
+
+  test("the file-mode status reports the audio's length, not the generation wall time", async ({ page, mockTTS }) => {
+    // synthesis slower than playback: the live timeline accumulates real gaps that
+    // the concatenated file (and Save WAV) do not contain
+    await mockTTS({ loadDelay: 20, chunkDelay: 900, chunkSeconds: 0.4 });
+    await page.goto("/#paste");
+    await startRead(page, "One here. Two here. Three here.");
+    await waitForFileMode(page, 30_000);
+    const tTotal = (await page.locator("#tTotal").textContent()).trim();
+    await expect(page.locator("#statusLine")).toContainText(`· ${tTotal} ·`); // the two lengths agree
+  });
+
   test("Save WAV is available the moment generation finishes, while audio is still playing", async ({ page, mockTTS }) => {
     // fast generation, slow audio: 2 sentences generate in ~100 ms but play for 6 s
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 3.0 });

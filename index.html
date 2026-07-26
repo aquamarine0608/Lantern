@@ -336,7 +336,7 @@
       <div class="player-spacer"></div>
       <button class="save-btn" id="saveBtn" disabled>Save WAV</button>
     </div>
-    <div class="hint" id="playerHint" hidden>No sound? Playback follows the ring/silent switch until this reading finishes generating.</div>
+    <div class="hint" id="playerHint" hidden>No sound? While this reading plays live it follows the ring/silent switch — flick the switch off silent.</div>
   </section>
   </section>
 
@@ -981,6 +981,11 @@ function tick() {
 }
 
 /* ---------------- WAV encoding ---------------- */
+/* the file the player scrubs and Save WAV writes is `chunks` concatenated — gapless.
+   totalDur is the LIVE timeline: at = max(scheduleT, ctx.currentTime + 0.03) inserts
+   real silence every time synthesis falls behind playback, so it runs long by exactly
+   those gaps and must never be printed as the file's length. */
+const audioSeconds = () => { let n = 0; for (const c of chunks) n += c.length; return n / SR; };
 function buildWav() {
   let len = 0; for (const c of chunks) len += c.length;
   const buf = new ArrayBuffer(44 + len * 2), v = new DataView(buf);
@@ -1125,7 +1130,10 @@ function switchToFile(offset, autoplay) {
   audioEl.addEventListener("loadedmetadata", () => {
     try { audioEl.currentTime = Math.min(target, audioEl.duration || target); } catch {}
   }, { once: true });
-  statusLine.textContent = `${sentDone} sentence${sentDone === 1 ? "" : "s"} · ${fmt(totalDur)} · tap the wave to jump around`;
+  statusLine.textContent = `${sentDone} sentence${sentDone === 1 ? "" : "s"} · ${fmt(audioSeconds())} · tap the wave to jump around`;
+  /* the ring/silent caveat ends HERE, not when generation does: the element is fed
+     by streamDest.stream until this handoff swaps in the WAV, so a fast synthesis
+     can leave minutes of muted live playback after "finished generating" */
   playerHint.hidden = true;
   saveBtn.disabled = false;
   if (autoplay) audioEl.play();
@@ -1254,7 +1262,6 @@ readBtn.addEventListener("click", async () => {
   if (aborted || streamFailed) { switchToFile(0, false); return; } /* the tick loop is already running — restarting it would leak a second one */
 
   mode = "done-live";
-  playerHint.hidden = true;
   saveBtn.disabled = false; /* chunks are complete the moment generation ends — exporting must not wait for playback to drain */
   statusLine.textContent = `Finished generating — ${fmt(totalDur)} total · still playing · ready to save`;
   /* the rAF handoff check is throttled when the screen locks — also hand off
@@ -2313,32 +2320,46 @@ engineBtns.addEventListener("click", ev => {
    sentence being read, and a change-then-blur pair applies only once. */
 let qwenUrlTouched = false;
 qwenUrl.addEventListener("input", () => { qwenUrlTouched = true; });
+/* PROVENANCE for the voice/key: the address that was SHOWN beside them when they
+   were typed — the only address they may be committed against unless the Server
+   field itself is being committed. "" (nothing shown) rides along with anything:
+   there was no host to type for. A keystroke re-stamps; the boot restore stamps
+   the restored draft. Without this, a key typed for server B while B's address
+   sat unconfirmed in the field would commit against still-live server A the
+   moment the user restored A's address — a Bearer token to the wrong host,
+   silently and persistently. */
+let qwenSibBase = "";
+const stampSibs = () => { qwenSibBase = normalizeServerUrl(qwenUrl.value); };
+qwenVoice.addEventListener("input", stampSibs);
+qwenKey.addEventListener("input", stampSibs);
+const sibsMayRide = v => !qwenSibBase || qwenSibBase === v;
 function commitQwenUrl() {
   const v = normalizeServerUrl(qwenUrl.value);
   /* blur alone never promotes a script-restored address the user has not touched
-     this session — including the blur that immediately follows commitShownServer's
-     focus() (Done / Escape / backdrop restore focus via closeSheets, and an Engine
-     tap blurs on mousedown). Without this the refuse path would commit the very
-     address it refused, over a working server, and destroy the draft that held it.
-     The value stays in the field and the draft to be finished. */
+     this session — Done / Escape / backdrop restore focus via closeSheets, and an
+     Engine tap blurs on mousedown. Without this a dismissal would commit an
+     unconfirmed draft address over a working server and destroy the draft. */
   if (!qwenUrlTouched && qwenServer && v !== qwenServer) { flushQwenFields(); return; }
   qwenUrl.value = v;
   let changed = v !== qwenServer;
+  const urlChanged = changed;
   if (changed) {
     qwenServer = v;
     try { localStorage.setItem("lantern.qwenUrl", v); } catch {}
   }
-  /* the voice/key still showing in the fields were typed FOR this address (a
-     restored draft fires no change/blur of its own) — adopt them with it, never
-     against the address they replaced. NOT gated on the address changing: a
-     sibling refused by commitShownServer parks in the draft, and restoring the
-     Server field to the address that is ALREADY live is the commonest way to
-     answer that refusal — gating here would discard the parked value for good.
-     v === qwenServer is exactly the case commitShownServer green-lights, so this
-     can never pair a key with a host it was not typed for. */
-  const dv = qwenVoice.value.trim() || "cherry", dk = qwenKey.value.trim();
-  if (dv !== qwenVoiceName) { qwenVoiceName = dv; changed = true; try { localStorage.setItem("lantern.qwenVoice", dv); } catch {} }
-  if (dk !== qwenApiKey) { qwenApiKey = dk; qwenKey.value = dk; changed = true; try { localStorage.setItem("lantern.qwenKey", dk); } catch {} }
+  /* the voice/key still showing in the fields ride along ONLY when (a) the address
+     itself is being committed — the triple travels with the user's last act — or
+     (b) the user engaged this field AND the siblings were typed beside this very
+     address (or beside nothing). A plain focus-and-leave stays the no-op the blur
+     contract promises — it must never promote the draft key/voice the boot block
+     refused over a working one (password field: the mistake would be invisible).
+     And re-typing the LIVE address never adopts siblings stamped for ANOTHER host. */
+  if (urlChanged || (qwenUrlTouched && sibsMayRide(v))) {
+    const dv = qwenVoice.value.trim() || "cherry", dk = qwenKey.value.trim();
+    if (dv !== qwenVoiceName) { qwenVoiceName = dv; changed = true; try { localStorage.setItem("lantern.qwenVoice", dv); } catch {} }
+    if (dk !== qwenApiKey) { qwenApiKey = dk; qwenKey.value = dk; changed = true; try { localStorage.setItem("lantern.qwenKey", dk); } catch {} }
+    stampSibs(); /* whatever the fields hold is now paired with the live address */
+  }
   if (changed) {
     clearErrorBanner(); /* "set your server first" / "check the API key" are answered by a real commit */
     applyEngineUI();
@@ -2361,13 +2382,32 @@ function commitShownServer() {
   if (!v && !qwenServer) return true; /* all-fresh: nothing to adopt, nothing to protect */
   if (v === qwenServer) return true; /* the shown address IS the live one */
   if (!v) return false; /* emptied/degenerate over a working server — refuse the siblings too */
-  if (!qwenUrlTouched) { qwenUrl.focus(); return false; } /* restored draft, unconfirmed — point at it */
+  /* NEVER move focus from inside a blur handler: a focus() here beat the pointer's
+     (and Tab's) own focus target, so keystrokes meant for the API-key field landed
+     in the Server field, forward Tab cycled Server↔Voice forever, and the "touched"
+     signal it produced let the next blur commit the mangled address. The refusal is
+     announced by refuseSibling instead. */
+  if (!qwenUrlTouched) return false; /* restored draft, unconfirmed */
   commitQwenUrl();
   return true;
 }
+/* the refuse is otherwise invisible on every dismissal path (Done hides the sheet in
+   the same click; Escape/backdrop have already hidden the field), leaving the fields
+   showing a config that is not the one in use, with the chip reading "server voice".
+   Announced only when a value is genuinely being held back, so a focus-and-leave
+   over a draft stays free; error:true also reaches the live region via announce(). */
+const QWEN_HOLD = `<b>Not saved yet.</b> Confirm the Server address in Voice settings first — the voice and API key you typed are still waiting on it.`;
+function refuseSibling(held) {
+  flushQwenFields(); /* the value still rides in the draft */
+  if (!held) return;
+  if (!banner.hidden && bannerText.innerHTML === QWEN_HOLD) return; /* change+blur are ONE gesture — say it once */
+  showBanner(QWEN_HOLD, { error: true });
+}
 function commitQwenVoice() {
-  if (!commitShownServer()) { flushQwenFields(); return; }
   const v = qwenVoice.value.trim() || "cherry";
+  /* even a green-lit address refuses siblings STAMPED for another host: they were
+     typed while a different address was shown, and must wait for that address */
+  if (!commitShownServer() || !sibsMayRide(qwenServer)) { refuseSibling(v !== qwenVoiceName); return; }
   if (v !== qwenVoiceName) {
     qwenVoiceName = v;
     try { localStorage.setItem("lantern.qwenVoice", v); } catch {}
@@ -2377,8 +2417,8 @@ function commitQwenVoice() {
   flushQwenFields();
 }
 function commitQwenKey() {
-  if (!commitShownServer()) { flushQwenFields(); return; }
   const v = qwenKey.value.trim();
+  if (!commitShownServer() || !sibsMayRide(qwenServer)) { refuseSibling(v !== qwenApiKey); return; }
   qwenKey.value = v;
   if (v !== qwenApiKey) {
     qwenApiKey = v;
@@ -2461,6 +2501,7 @@ try {
     qwenKey.value = qwenApiKey;
     try { localStorage.setItem("lantern.qwenKey", qwenApiKey); } catch {}
   }
+  qwenSibBase = normalizeServerUrl(qwenUrl.value); /* the restored voice/key were typed beside the restored address */
   /* clears the draft only once NOTHING is left uncommitted — an unconditional
      clearQwenDraft() here would throw away the voice/key it did not adopt */
   flushQwenFields();
