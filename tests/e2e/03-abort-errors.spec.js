@@ -98,6 +98,28 @@ test.describe("stopping and error paths", () => {
     await expect(page.locator("#readBtn")).toHaveText("Read aloud", { timeout: 15_000 });
     await expect(page.locator("#player")).toBeHidden();
     await expect(page.locator("#saveBtn")).toBeDisabled();
+    // …and it says so, instead of the player silently flashing open and shut
+    await expect(page.locator("#bannerText")).toContainText("isn't producing any audio");
+  });
+
+  test("stop during the audio-session activation tears down cleanly", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 3000, chunkDelay: 50, chunkSeconds: 0.4 });
+    // make ctx.resume() a REAL await, like iOS activating the audio session
+    await page.addInitScript(() => {
+      const orig = AudioContext.prototype.resume;
+      AudioContext.prototype.resume = function () {
+        return new Promise((r) => setTimeout(() => r(orig.call(this)), 600));
+      };
+    });
+    await page.goto("/#paste");
+    await startRead(page);
+    await page.waitForTimeout(200); // inside the resume await, BEFORE qrWarmToken is armed
+    await page.click("#readBtn"); // Stop
+    // must return to idle promptly — not sit on a dead "Stopping…" while the model downloads
+    await expect(page.locator("#readBtn")).toHaveText("Read aloud", { timeout: 2_000 });
+    await expect(page.locator("#player")).toBeHidden();
+    expect(await page.evaluate(() => navigator.mediaSession.playbackState)).not.toBe("playing");
+    await expect(page.locator("#banner")).toBeHidden(); // no "First run: downloading" raised after the cancel
   });
 
   test("an empty audio chunk from the engine is skipped without an error", async ({ page, mockTTS }) => {

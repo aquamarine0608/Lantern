@@ -601,12 +601,63 @@ test.describe("Qwen3-TTS server engine", () => {
     // the key was typed for the other host: it must NOT pair with the live one
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull();
+    // trying to commit the parked key now names the REAL remedy (not "confirm the address")
+    await page.locator("#qwenKey").focus();
+    await page.locator("#qwenKey").blur();
+    await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
+    // …and following it works: retyping the key stamps it for the shown (live) address
+    await page.fill("#qwenKey", "sk-live-2");
+    await page.locator("#qwenKey").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live-2");
     await page.click(".sheet:not([hidden]) .sheet-done");
     await page.click("#pasteModeBtn");
     await startRead(page);
     await waitForFileMode(page);
     const reqs = await getQwenRequests();
-    expect(reqs[reqs.length - 1].__auth).toBe("Bearer sk-live");
+    expect(reqs[reqs.length - 1].__auth).toBe("Bearer sk-live-2");
+  });
+
+  test("a focus-and-leave of the key or voice field never promotes draft values", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenVoice", "ethan");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "cherry", k: "sk-tru", b: url }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.locator("#qwenKey").focus();
+    await page.locator("#qwenKey").blur(); // zero keystrokes — a script-restored value must not go live
+    await page.locator("#qwenVoice").focus();
+    await page.locator("#qwenVoice").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenVoice"))).toBe("ethan");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull();
+    // typing IS engagement: finishing the key commits it
+    await page.fill("#qwenKey", "sk-finished");
+    await page.locator("#qwenKey").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-finished");
+  });
+
+  test("a key parked for another host never goes live after a relaunch", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    // what the app itself persists after the cross-host refusal: the draft's address
+    // was rewritten to the live one, but the stamp (b) still names the other host
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url); // live host — no key ever committed
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "", k: "sk-for-host-b", b: "https://host-b.example" }));
+    }, QWEN_URL);
+    await page.goto("/#paste");
+    // the boot adoption must honour the persisted provenance, not the rewritten address
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBeNull();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull();
+    await startRead(page);
+    await waitForFileMode(page);
+    const reqs = await getQwenRequests();
+    expect(reqs[reqs.length - 1].__auth).toBeNull(); // host B's token never reached host A
   });
 
   test("a focus-and-leave of the Server field never promotes draft values over working ones", async ({ page, mockTTS }) => {

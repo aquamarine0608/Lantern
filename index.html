@@ -1185,7 +1185,20 @@ readBtn.addEventListener("click", async () => {
     if (ctx !== liveCtx || (mode !== "generating" && mode !== "done-live")) return;
     setPlayIcon(liveCtx.state === "running");
   };
-  await ctx.resume();
+  try { await ctx.resume(); } catch {} /* a concurrent teardown closes the context — a rejected resume is not an error */
+  /* activating the audio session is a REAL await on iOS and when the browser routes
+     to a Bluetooth output: a Stop tap, an Engine switch or a view switch can all
+     land inside it, BEFORE qrWarmToken is armed below — so the stop branch takes
+     its "Stopping…" path and nothing tears this session down. Bail here instead:
+     publishing the transport and then parking on the uncancellable model download
+     is exactly the dead red "Stop reading" that qrWarmToken exists to prevent. */
+  if (myToken !== qrToken || !ctx) return; /* superseded / torn down while resuming — the newer owner fixed the UI */
+  if (aborted) { /* Stop (or an engine change) pressed while the context was activating */
+    readBtn.textContent = "Read aloud"; readBtn.classList.remove("stopping", "working");
+    mode = "idle"; player.hidden = true; resetSession();
+    releaseMediaSession();
+    return;
+  }
   streamDest = ctx.createMediaStreamDestination();
   ensureAudioEl();
   audioEl.srcObject = streamDest.stream;
@@ -1255,6 +1268,16 @@ readBtn.addEventListener("click", async () => {
   /* a failed stream is handled like a stop: keep whatever audio exists, otherwise back to idle.
      No audio at all — stopped, failed, or every chunk empty — never opens an empty player. */
   if (chunks.length === 0) {
+    /* the three no-audio sub-cases are NOT interchangeable: a stop needs no message
+       and a failure was already bannered above, but "every sentence came back with
+       zero samples" had none — the player flashed open and shut with the status
+       still "Warming up…". A header-only WAV (data size 0) parses fine, so even the
+       server case lands here rather than as qwenBadAudio. error:true also reaches
+       the live region. Same condition the reader reports from its silent-book park. */
+    if (!aborted && !streamFailed)
+      showBanner(engine === "qwen"
+        ? `<b>Your server answered, but returned no audio.</b> None of this text could be voiced — check the server's own logs, or try a different voice.`
+        : `<b>This text isn't producing any audio.</b> The voice engine returned silence — try different text, or another voice.`, { error: true });
     mode = "idle"; player.hidden = true; resetSession();
     releaseMediaSession();
     return;
@@ -2330,8 +2353,15 @@ qwenUrl.addEventListener("input", () => { qwenUrlTouched = true; });
    silently and persistently. */
 let qwenSibBase = "";
 const stampSibs = () => { qwenSibBase = normalizeServerUrl(qwenUrl.value); };
-qwenVoice.addEventListener("input", stampSibs);
-qwenKey.addEventListener("input", stampSibs);
+/* per-field engagement, exactly the qwenUrlTouched contract: a value only a SCRIPT
+   put in the field (the boot draft restore) must never go live because focus passed
+   through it. The key field is type=password, so such a promotion is invisible — and
+   the flushQwenFields at the end of the commit then DELETES the draft it came from,
+   leaving the working key nowhere. A keystroke is engagement; a pristine
+   focus-and-leave stays the no-op the blur contract promises. */
+let qwenVoiceTouched = false, qwenKeyTouched = false;
+qwenVoice.addEventListener("input", () => { qwenVoiceTouched = true; stampSibs(); });
+qwenKey.addEventListener("input", () => { qwenKeyTouched = true; stampSibs(); });
 const sibsMayRide = v => !qwenSibBase || qwenSibBase === v;
 function commitQwenUrl() {
   const v = normalizeServerUrl(qwenUrl.value);
@@ -2397,17 +2427,25 @@ function commitShownServer() {
    Announced only when a value is genuinely being held back, so a focus-and-leave
    over a draft stays free; error:true also reaches the live region via announce(). */
 const QWEN_HOLD = `<b>Not saved yet.</b> Confirm the Server address in Voice settings first — the voice and API key you typed are still waiting on it.`;
-function refuseSibling(held) {
+/* the provenance refusal needs a DIFFERENT remedy: the address shown is already the
+   live one, so "confirm the address" is a guaranteed no-op — stampSibs() is reached
+   only inside commitQwenUrl's adoption branch, which needs urlChanged or a matching
+   stamp, and re-committing the same address can produce neither. Name what actually
+   releases the values. */
+const QWEN_HOLD_STALE = `<b>Not saved yet.</b> The voice and API key showing here were typed for a different server address. Type them again for the address now shown to save them — or put that other address back.`;
+function refuseSibling(held, why) {
   flushQwenFields(); /* the value still rides in the draft */
   if (!held) return;
-  if (!banner.hidden && bannerText.innerHTML === QWEN_HOLD) return; /* change+blur are ONE gesture — say it once */
-  showBanner(QWEN_HOLD, { error: true });
+  if (!banner.hidden && bannerText.innerHTML === why) return; /* change+blur are ONE gesture — say it once */
+  showBanner(why, { error: true });
 }
 function commitQwenVoice() {
   const v = qwenVoice.value.trim() || "cherry";
+  if (!qwenVoiceTouched && v !== qwenVoiceName) { flushQwenFields(); return; } /* pristine draft value — keep it in the draft, never promote it */
+  if (!commitShownServer()) { refuseSibling(v !== qwenVoiceName, QWEN_HOLD); return; }
   /* even a green-lit address refuses siblings STAMPED for another host: they were
      typed while a different address was shown, and must wait for that address */
-  if (!commitShownServer() || !sibsMayRide(qwenServer)) { refuseSibling(v !== qwenVoiceName); return; }
+  if (!sibsMayRide(qwenServer)) { refuseSibling(v !== qwenVoiceName, QWEN_HOLD_STALE); return; }
   if (v !== qwenVoiceName) {
     qwenVoiceName = v;
     try { localStorage.setItem("lantern.qwenVoice", v); } catch {}
@@ -2418,7 +2456,9 @@ function commitQwenVoice() {
 }
 function commitQwenKey() {
   const v = qwenKey.value.trim();
-  if (!commitShownServer() || !sibsMayRide(qwenServer)) { refuseSibling(v !== qwenApiKey); return; }
+  if (!qwenKeyTouched && v !== qwenApiKey) { flushQwenFields(); return; } /* pristine draft value — keep it in the draft, never promote it */
+  if (!commitShownServer()) { refuseSibling(v !== qwenApiKey, QWEN_HOLD); return; }
+  if (!sibsMayRide(qwenServer)) { refuseSibling(v !== qwenApiKey, QWEN_HOLD_STALE); return; }
   qwenKey.value = v;
   if (v !== qwenApiKey) {
     qwenApiKey = v;
@@ -2443,7 +2483,11 @@ function flushQwenFields() {
     if (normalizeServerUrl(u) === qwenServer &&
         (v.trim() || "cherry") === qwenVoiceName &&
         k.trim() === qwenApiKey) { clearQwenDraft(); return; } /* nothing uncommitted */
-    localStorage.setItem(QDRAFT, JSON.stringify({ u, v, k }));
+    /* b: the provenance stamp travels WITH the draft. The draft's `u` cannot carry
+       it — commitQwenUrl rewrites the field (and so the flushed u) when the user
+       answers a refusal by restoring the live address, but the parked voice/key
+       were still typed beside the OTHER host. */
+    localStorage.setItem(QDRAFT, JSON.stringify({ u, v, k, b: qwenSibBase }));
   } catch {}
 }
 window.addEventListener("pagehide", flushQwenFields);
@@ -2453,12 +2497,14 @@ qwenVoice.value = qwenVoiceName;
 qwenKey.value = qwenApiKey;
 /* show any edit the user was interrupted mid-way through — in the fields only;
    reading continues with the last committed address until they blur/commit */
+let draftSib = null; /* provenance must outlive the session */
 try {
   const d = JSON.parse(localStorage.getItem(QDRAFT) || "null");
   if (d && typeof d === "object") {
     if (typeof d.u === "string") qwenUrl.value = d.u;
     if (typeof d.v === "string") qwenVoice.value = d.v;
     if (typeof d.k === "string") qwenKey.value = d.k;
+    if (typeof d.b === "string") draftSib = d.b;
   }
 } catch { clearQwenDraft(); }
 /* a draft may only shadow a WORKING value. With nothing ever committed for a
@@ -2468,6 +2514,10 @@ try {
    type=password field. A script-restored value fires neither `change` nor
    `blur`, so without this it could never become live. */
 {
+  /* the stamp the draft was flushed with, NOT the address it now shows: commitQwenUrl
+     rewrites `u` when it refuses the siblings, so `u` cannot carry provenance.
+     Drafts written by older builds carry no stamp — fall back to the shown address. */
+  qwenSibBase = draftSib === null ? normalizeServerUrl(qwenUrl.value) : draftSib;
   let hadVoice = null, hadKey = null;
   try { hadVoice = localStorage.getItem("lantern.qwenVoice"); hadKey = localStorage.getItem("lantern.qwenKey"); } catch {}
   if (!qwenServer && normalizeServerUrl(qwenUrl.value)) {
@@ -2487,7 +2537,7 @@ try {
      and hadVoice === null — "the user never committed a voice" — could never be
      true again, killing this branch for every real (second-and-later) load. */
   const shownVoice = qwenVoice.value.trim();
-  if (draftServerIsLive && hadVoice === null && shownVoice && shownVoice !== qwenVoiceName) {
+  if (draftServerIsLive && sibsMayRide(qwenServer) && hadVoice === null && shownVoice && shownVoice !== qwenVoiceName) {
     qwenVoiceName = shownVoice;
     try { localStorage.setItem("lantern.qwenVoice", qwenVoiceName); } catch {}
   }
@@ -2496,12 +2546,11 @@ try {
      draft-restored key forever, leaving the 401's "check the API key" pointing at a
      password field that already shows the right one. draftServerIsLive above still
      keeps a key from ever pairing with a different address. */
-  if (draftServerIsLive && !hadKey && qwenKey.value.trim()) {
+  if (draftServerIsLive && sibsMayRide(qwenServer) && !hadKey && qwenKey.value.trim()) {
     qwenApiKey = qwenKey.value.trim();
     qwenKey.value = qwenApiKey;
     try { localStorage.setItem("lantern.qwenKey", qwenApiKey); } catch {}
   }
-  qwenSibBase = normalizeServerUrl(qwenUrl.value); /* the restored voice/key were typed beside the restored address */
   /* clears the draft only once NOTHING is left uncommitted — an unconditional
      clearQwenDraft() here would throw away the voice/key it did not adopt */
   flushQwenFields();
