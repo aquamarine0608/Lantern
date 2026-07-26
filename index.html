@@ -111,6 +111,18 @@
   .banner .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 9px; overflow: hidden; }
   .banner .bar i { display: block; height: 100%; width: 0%; background: var(--lamp); border-radius: 2px; transition: width .25s ease; }
   .banner.error { border-color: rgba(224,106,85,.5); color: var(--chalk); }
+  /* In the reader, an in-flow banner would steal ~112px off #rScroll the moment it
+     appears (body.reading .wrap is a fixed-height column) — and loadModel /
+     ensureEngineReady can raise it a few ms into press 1 of a double-click, moving
+     the text under press 2. Float it over the text, below .r-top, so Back /
+     Chapters / Aa and the player controls the message points at stay tappable.
+     z-index 7 keeps it under the sheet layer (backdrop 8, sheet 9); the sheet rule
+     below lifts it to 10 whenever a sheet is open. */
+  body.reading .banner {
+    position: fixed; z-index: 7; left: 12px; right: 12px; max-width: 616px; margin: 0 auto;
+    top: calc(env(safe-area-inset-top) + 66px);
+    box-shadow: 0 6px 30px rgba(4,8,14,.6);
+  }
   /* nothing in this banner may be painted underneath an open sheet — not an error,
      and not the 90 MB first-run download, which the Engine → On-device control
      INSIDE the settings sheet can start (setEngine → readerSettingsChanged →
@@ -198,7 +210,13 @@
   .sent { border-radius: 4px; cursor: pointer; }
   .sent.speaking { background: rgba(242,178,76,.16); box-shadow: 0 0 0 3px rgba(242,178,76,.16); }
   .r-player { display: flex; flex-direction: column; gap: 8px; }
-  .r-status { font-size: 12px; color: var(--mist); text-align: center; min-height: 15px; }
+  /* a FIXED two-line box, not min-height: .r-status is a flex child of .r-player in
+     a fixed-height column, so a height change takes space straight out of #rScroll —
+     and readerPlayFrom repaints this line synchronously inside press 1 of a
+     double-click (the 1→2 line flip moved the text under press 2, so the look-up
+     gesture's undo never fired). Two lines fits every status down to 320px. */
+  .r-status { font-size: 12px; line-height: 1.45; color: var(--mist); text-align: center;
+              flex: 0 0 auto; height: calc(2 * 1.45 * 12px); overflow: hidden; }
   .r-controls { justify-content: center; }
   .r-hint { text-align: center; }
 
@@ -1256,6 +1274,26 @@ function stopQuickRead() {
   releaseMediaSession(); /* the session is gone, not parked */
 }
 
+/* a live paste session picked its engine ONCE: sentenceAudioStream branches on the
+   first next() and then loops that one synthesizer for every remaining sentence, and
+   nothing downstream re-reads `engine`. Switching to On-device would leave the
+   generator POSTing the rest of the text to the server while the footer claims
+   "Runs entirely on this device" and genLabel() says "generating on-device". Stop it
+   exactly like the Stop button — audio already generated stays playable and
+   saveable. (The reader's equivalent is readerSettingsChanged.) */
+function stopQuickReadForEngineChange() {
+  if (mode !== "generating") return; /* idle / done-live / file own no in-flight synthesis */
+  aborted = true;
+  if (ctx) { try { ctx.suspend(); } catch {} }
+  if (qrAbort) qrAbort.abort(); /* cancels the in-flight POST synchronously */
+  if (qrWarmToken === qrToken) { /* still parked on an uncancellable model download */
+    qrWarmToken = 0;
+    stopQuickRead();
+    return;
+  }
+  statusLine.textContent = "Stopping — voice engine changed…";
+}
+
 /* ================================================================
    book storage (IndexedDB)
    ================================================================ */
@@ -2226,6 +2264,7 @@ function setEngine(e) {
   /* the kokoro download banner is meaningless on the server engine (the download
      itself continues in the background and becomes a warm cache) */
   if (e === "qwen" && !banner.hidden) hideBanner();
+  stopQuickReadForEngineChange(); /* the footer must never claim an engine the live session isn't using */
   applyEngineUI();
   readerSettingsChanged();
 }
@@ -2260,6 +2299,7 @@ function commitQwenVoice() {
   if (v !== qwenVoiceName) {
     qwenVoiceName = v;
     try { localStorage.setItem("lantern.qwenVoice", v); } catch {}
+    clearErrorBanner(); /* the parked error describes an attempt made with the OLD voice */
     readerSettingsChanged();
   }
   flushQwenFields();
@@ -2270,6 +2310,7 @@ function commitQwenKey() {
   if (v !== qwenApiKey) {
     qwenApiKey = v;
     try { localStorage.setItem("lantern.qwenKey", v); } catch {}
+    clearErrorBanner(); /* "check the API key in Voice settings" is answered the moment a new key is committed */
     readerSettingsChanged();
   }
   flushQwenFields();
@@ -2307,14 +2348,32 @@ try {
     if (typeof d.k === "string") qwenKey.value = d.k;
   }
 } catch { clearQwenDraft(); }
-/* a draft may only shadow a WORKING value. With nothing ever committed there is
-   nothing to protect, and a field-only restore would leave the chip and every
-   read telling the user to enter the address they can already see. */
-if (!qwenServer && normalizeServerUrl(qwenUrl.value)) {
-  qwenServer = normalizeServerUrl(qwenUrl.value);
-  qwenUrl.value = qwenServer;
-  try { localStorage.setItem("lantern.qwenUrl", qwenServer); } catch {}
-  clearQwenDraft();
+/* a draft may only shadow a WORKING value. With nothing ever committed for a
+   field there is nothing to protect, and a field-only restore leaves the app
+   telling the user to fix a setting they can already see — the chip's "set
+   server address", and the 401 banner's "check the API key" over a filled
+   type=password field. A script-restored value fires neither `change` nor
+   `blur`, so without this it could never become live. */
+{
+  let hadVoice = null, hadKey = null;
+  try { hadVoice = localStorage.getItem("lantern.qwenVoice"); hadKey = localStorage.getItem("lantern.qwenKey"); } catch {}
+  if (!qwenServer && normalizeServerUrl(qwenUrl.value)) {
+    qwenServer = normalizeServerUrl(qwenUrl.value);
+    qwenUrl.value = qwenServer;
+    try { localStorage.setItem("lantern.qwenUrl", qwenServer); } catch {}
+  }
+  if (hadVoice === null && qwenVoice.value.trim()) {
+    qwenVoiceName = qwenVoice.value.trim();
+    try { localStorage.setItem("lantern.qwenVoice", qwenVoiceName); } catch {}
+  }
+  if (hadKey === null && qwenKey.value.trim()) {
+    qwenApiKey = qwenKey.value.trim();
+    qwenKey.value = qwenApiKey;
+    try { localStorage.setItem("lantern.qwenKey", qwenApiKey); } catch {}
+  }
+  /* clears the draft only once NOTHING is left uncommitted — an unconditional
+     clearQwenDraft() here would throw away the voice/key it did not adopt */
+  flushQwenFields();
 }
 applyEngineUI();
 libVoiceBtn.addEventListener("click", () => openSheet(setSheet));

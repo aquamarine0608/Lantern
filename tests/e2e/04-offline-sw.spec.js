@@ -108,23 +108,19 @@ test.describe("service worker and offline", () => {
       await (await caches.open(name)).put(u, new Response("wasm-bytes"));
     }, WASM);
 
-    // a VERSION bump must migrate the WHOLE cdn cache, not just the pinned three
+    // a VERSION bump must migrate the WHOLE cdn cache, not just the pinned three —
+    // wait for BOTH entries: the copy is sequential, so either can land first
     await page.evaluate(() => navigator.serviceWorker.register("/sw.js?v=vNEXT"));
     await page.waitForFunction(async (u) => {
       for (const name of await caches.keys()) {
         if (!name.includes("vNEXT") || !name.includes("cdn")) continue;
-        if (await (await caches.open(name)).match(u)) return true;
+        const c = await caches.open(name);
+        const wasm = await c.match(u);
+        const keys = (await c.keys()).map((r) => r.url);
+        if (wasm && keys.some((k) => k.includes("kokoro.web.js"))) return true;
       }
       return false;
     }, WASM, { timeout: 15_000 });
-
-    // the pinned precache entries came along too
-    const hasKokoro = await page.evaluate(async () => {
-      const name = (await caches.keys()).find((k) => k.includes("vNEXT") && k.includes("cdn"));
-      const keys = (await (await caches.open(name)).keys()).map((r) => r.url);
-      return keys.some((u) => u.includes("kokoro.web.js"));
-    });
-    expect(hasKokoro).toBe(true);
   });
 
   test("the Google Fonts stylesheet is cached for offline use", async ({ page }) => {

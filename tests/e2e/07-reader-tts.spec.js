@@ -414,6 +414,28 @@ test.describe("reading books aloud", () => {
     expect(Math.abs(after - before)).toBeLessThanOrEqual(2); // the first tick must hold, not re-centre
   });
 
+  test("neither the status line nor the download banner resizes the reading pane mid-gesture", async ({ page, mockTTS }) => {
+    // first run: the tap starts the model download, which raises the banner — and
+    // the status line gains the engine label. Neither may move #rScroll's edges.
+    await mockTTS({ loadDelay: 1500, progressSteps: 1, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await importEpub(page);
+    await page.click(".book");
+    await expect(page.locator(".sent").first()).toBeVisible();
+    const rect0 = await page.evaluate(() => {
+      const r = document.getElementById("rScroll").getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom };
+    });
+    await page.click('.sent[data-si="1"]');
+    await expect(page.locator("#banner")).toBeVisible();
+    const rect1 = await page.evaluate(() => {
+      const r = document.getElementById("rScroll").getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom };
+    });
+    expect(rect1.top).toBe(rect0.top);
+    expect(rect1.bottom).toBe(rect0.bottom); // press 2 of a double-click lands on the same text
+  });
+
   test("books read aloud fully offline after one online visit", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5 });
     await page.goto("/");

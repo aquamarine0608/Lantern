@@ -415,6 +415,61 @@ test.describe("Qwen3-TTS server engine", () => {
     }
   });
 
+  test("switching engines mid-paste stops the server session instead of lying about it", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await enableQwen(page);
+    await setQwenHang(true); // the in-flight request never answers — the session is clearly live
+    await page.click("#pasteModeBtn");
+    await startRead(page, "One sentence here. Two sentences here. Three sentences here.");
+    await expect(page.locator("#readBtn")).toHaveText("Stop reading");
+    await page.waitForTimeout(400); // the first POST is now hung in flight
+
+    await page.click("#pasteVoiceBtn");
+    await page.click('#engineBtns button[data-e="kokoro"]');
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    // the live session stops like Stop — the footer's claim is true again
+    await expect(page.locator("#readBtn")).toHaveText("Read aloud", { timeout: 10_000 });
+    await expect(page.locator("#appFooter")).toContainText("Runs entirely on this device");
+    const before = (await getQwenRequests()).length;
+    await page.waitForTimeout(800); // a zombie generator would keep POSTing sentences here
+    expect((await getQwenRequests()).length).toBe(before);
+  });
+
+  test("a draft voice and key restored before any commit become live on relaunch", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "sage", k: "sk-test-123" }));
+    }, QWEN_URL);
+    await page.goto("/#paste");
+    // all three fields adopted (nothing was ever committed), draft cleared
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenVoice"))).toBe("sage");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-test-123");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).toBeNull();
+    // and synthesis actually uses the restored voice — not a default the field contradicts
+    await startRead(page);
+    await waitForFileMode(page);
+    const reqs = await getQwenRequests();
+    expect(reqs[reqs.length - 1].voice).toBe("sage");
+  });
+
+  test("committing a corrected voice clears the error that demanded the correction", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5 });
+    await page.goto("/");
+    await importEpub(page);
+    await page.click(".book");
+    await page.click("#fontBtn");
+    await page.click('#engineBtns button[data-e="qwen"]'); // no server URL
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click("#rPlay");
+    await expect(page.locator("#bannerText")).toContainText("Set your Qwen3-TTS server first");
+    await page.click("#fontBtn");
+    await page.fill("#qwenVoice", "sage");
+    await page.locator("#qwenVoice").blur(); // commit — the parked error described the OLD config
+    await expect(page.locator("#banner")).toBeHidden();
+  });
+
   test("the paste view can open Voice settings to fix a server error in place", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.addInitScript(() => localStorage.setItem("lantern.engine", "qwen"));

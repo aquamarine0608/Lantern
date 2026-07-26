@@ -137,7 +137,7 @@ function startQwenServer(state) {
   const server = http.createServer((req, res) => {
     const cors = {
       "access-control-allow-origin": "*",
-      "access-control-allow-headers": "content-type",
+      "access-control-allow-headers": "content-type, authorization", // the app sends a Bearer key when configured
       "access-control-allow-methods": "POST, GET, OPTIONS",
     };
     if (req.url === "/__requests") {
