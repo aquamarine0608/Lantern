@@ -104,6 +104,16 @@ test.describe("accessibility and input", () => {
     await expect(page.locator(".book .b-del")).toHaveText("Really remove?");
   });
 
+  test("the server config fields carry programmatic labels, not placeholder names", async ({ page }) => {
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.click('#engineBtns button[data-e="qwen"]');
+    const cfg = page.locator("#qwenCfg");
+    await expect(cfg.getByLabel("Server")).toHaveAttribute("id", "qwenUrl");
+    await expect(cfg.getByLabel("Voice", { exact: true })).toHaveAttribute("id", "qwenVoice");
+    await expect(cfg.getByLabel("API key")).toHaveAttribute("id", "qwenKey"); // was announced as "optional"
+  });
+
   test("the settings-sheet speed and engine buttons keep a real touch height", async ({ page }) => {
     await page.goto("/");
     await importEpub(page);

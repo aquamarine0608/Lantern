@@ -111,9 +111,13 @@
   .banner .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 9px; overflow: hidden; }
   .banner .bar i { display: block; height: 100%; width: 0%; background: var(--lamp); border-radius: 2px; transition: width .25s ease; }
   .banner.error { border-color: rgba(224,106,85,.5); color: var(--chalk); }
-  /* an error must never be painted underneath an open sheet — float it above the
-     sheet layer instead of closing the sheet the message may be asking the user to use */
-  body:has(.sheet:not([hidden])) .banner.error {
+  /* nothing in this banner may be painted underneath an open sheet — not an error,
+     and not the 90 MB first-run download, which the Engine → On-device control
+     INSIDE the settings sheet can start (setEngine → readerSettingsChanged →
+     readerPlayFrom → loadModel). Float it above the sheet layer instead of closing
+     the sheet the message may be asking the user to use. [hidden] is
+     display:none !important, so a hidden banner is unaffected. */
+  body:has(.sheet:not([hidden])) .banner {
     position: fixed; z-index: 10; left: 12px; right: 12px; max-width: 616px; margin: 0 auto;
     top: calc(10px + env(safe-area-inset-top));
     box-shadow: 0 6px 30px rgba(4,8,14,.6);
@@ -194,6 +198,7 @@
   .r-player { display: flex; flex-direction: column; gap: 8px; }
   .r-status { font-size: 12px; color: var(--mist); text-align: center; min-height: 15px; }
   .r-controls { justify-content: center; }
+  .r-hint { text-align: center; }
 
   /* ---------- bottom sheets ---------- */
   .sheet-backdrop { position: fixed; inset: 0; background: rgba(4,8,14,.55); z-index: 8; }
@@ -255,7 +260,7 @@
   <section class="view" id="viewPaste">
   <button class="ghost-btn back-row" id="pasteBackBtn">‹ Library</button>
   <section class="page">
-    <textarea id="text" placeholder="Paste a chapter, an article, anything…" spellcheck="false"></textarea>
+    <textarea id="text" aria-label="Text to read aloud" placeholder="Paste a chapter, an article, anything…" spellcheck="false"></textarea>
     <div class="page-foot">
       <span class="count" id="count">0 words</span>
       <button class="clear-btn" id="clearBtn">Clear</button>
@@ -330,6 +335,7 @@
           <svg viewBox="0 0 24 24"><path d="M15.5 5H18v14h-2.5zM4 6.2v11.6c0 1 1.1 1.6 2 1.1l9.3-5.8c.8-.5.8-1.7 0-2.2L6 5.1C5.1 4.6 4 5.2 4 6.2z"/></svg>
         </button>
       </div>
+      <div class="hint r-hint" id="readerHint" hidden>No sound? The book's voice follows your phone's ring/silent switch.</div>
     </div>
 
   </section>
@@ -356,9 +362,11 @@
       </div>
     </div>
     <div id="qwenCfg" hidden>
-      <div class="set-row"><span>Server</span><input id="qwenUrl" class="cfg-input" type="url" placeholder="https://your-pc.tail1234.ts.net" spellcheck="false" autocapitalize="none" autocorrect="off" autocomplete="off"></div>
-      <div class="set-row"><span>Voice</span><input id="qwenVoice" class="cfg-input" placeholder="cherry" spellcheck="false" autocapitalize="none" autocorrect="off" autocomplete="off"></div>
-      <div class="set-row"><span>API key</span><input id="qwenKey" class="cfg-input" type="password" placeholder="optional" spellcheck="false" autocomplete="off"></div>
+      <!-- real <label for> pairs: with only sibling spans the accessible name falls
+           back to the placeholder, announcing the key field as just "optional" -->
+      <div class="set-row"><label for="qwenUrl">Server</label><input id="qwenUrl" class="cfg-input" type="url" placeholder="https://your-pc.tail1234.ts.net" spellcheck="false" autocapitalize="none" autocorrect="off" autocomplete="off"></div>
+      <div class="set-row"><label for="qwenVoice">Voice</label><input id="qwenVoice" class="cfg-input" placeholder="cherry" spellcheck="false" autocapitalize="none" autocorrect="off" autocomplete="off"></div>
+      <div class="set-row"><label for="qwenKey">API key</label><input id="qwenKey" class="cfg-input" type="password" placeholder="optional" spellcheck="false" autocomplete="off"></div>
       <p class="hint">Qwen3-TTS needs a GPU, so it runs on a computer you own and Lantern streams the voice from it (an OpenAI-compatible <span class="mono">/v1/audio/speech</span> server, reachable over HTTPS with CORS enabled). On-device reading keeps working offline either way.</p>
     </div>
     <div class="set-row"><span>Speed</span>
@@ -425,7 +433,7 @@ const textEl = $("text"), countEl = $("count"), readBtn = $("readBtn"),
       pasteModeBtn = $("pasteModeBtn"), pasteBackBtn = $("pasteBackBtn"),
       backBtn = $("backBtn"), tocBtn = $("tocBtn"), fontBtn = $("fontBtn"),
       rBook = $("rBook"), rChapter = $("rChapter"), rScroll = $("rScroll"), rContent = $("rContent"),
-      rStatus = $("rStatus"), rPrev = $("rPrev"), rPlay = $("rPlay"), rNext = $("rNext"),
+      rStatus = $("rStatus"), readerHint = $("readerHint"), rPrev = $("rPrev"), rPlay = $("rPlay"), rNext = $("rNext"),
       rIconPlay = $("rIconPlay"), rIconPause = $("rIconPause"),
       sheetBackdrop = $("sheetBackdrop"), tocSheet = $("tocSheet"), setSheet = $("setSheet"), tocList = $("tocList"),
       fontMinus = $("fontMinus"), fontPlus = $("fontPlus"), fontVal = $("fontVal"),
@@ -615,14 +623,19 @@ for (const group of [speedsEl, rSpeeds])
 function loadModel(quiet) {
   if (tts) return Promise.resolve(tts);
   if (modelLoading) {
-    if (!quiet && modelLoadQuiet) {
-      /* a user-initiated read joined the quiet warm-up — this is user-visible work
-         now, so surface the banner and progress the quiet start skipped */
+    /* a user-initiated read joined an in-flight load: it started as the silent
+       boot warm-up, OR an engine round-trip hid its banner (setEngine → qwen).
+       Either way this is user-visible work now — surface the banner and the
+       progress the current UI is not showing. In the reader the chip is
+       display:none, so the banner is the ONLY possible indicator. showBanner is
+       reached only when banner.hidden, so a live error is never overwritten,
+       and the still-running progress_callback restores the byte counter. */
+    if (!quiet) {
       modelLoadQuiet = false;
       if (banner.hidden) showBanner(modelWasCached
         ? `<b>Loading the voice model…</b> Already saved on this device — no download.`
         : `<b>Downloading the voice model…</b>${MODEL_CACHEABLE ? " One time only." : ""}`, { bar: true });
-    } else if (!quiet) modelLoadQuiet = false;
+    }
     return modelLoading;
   }
   modelLoadQuiet = !!quiet;
@@ -1635,6 +1648,7 @@ function readerTeardown() {
   rd.playing = false; rd.started = false;
   rd.cache.clear();
   rd.book = null;
+  readerHint.hidden = true;
   rd.emptyRun = 0; /* one book's silent chapters must not park the next book */
   curSentEl = null;
   /* the reading is GONE, not parked: readerToggle/readerSkip bail on !rd.book, so
@@ -1790,7 +1804,7 @@ function setReaderMediaSession(playing) {
   } catch {}
 }
 
-async function readerPlayFrom(si) {
+async function readerPlayFrom(si, { scroll = true } = {}) {
   if (!rd.book) return;
   stopQuickRead();
   readerStopPlayback();
@@ -1805,8 +1819,9 @@ async function readerPlayFrom(si) {
      highlightSentence moves the marker WITH it (and repaints the status line):
      an engine-failure catch below only fixes the icon and status, so a bare
      rd.si write would strand the amber highlight on the previous sentence. */
-  highlightSentence(si, { force: true });
+  highlightSentence(si, { scroll, force: true });
   setReaderIcon("busy");
+  readerHint.hidden = false; /* the reader drives a MediaStream, which iOS mutes under the ring/silent switch */
   (async () => {
   await ensureReaderAudio();
   if (myToken !== rd.token) return;
@@ -1828,7 +1843,7 @@ async function readerPlayFrom(si) {
   setReaderMediaSession(rd.playing);
   cancelAnimationFrame(rd.raf);
   readerTick();
-  highlightSentence(si, { force: true });
+  highlightSentence(si, { scroll, force: true });
   rd.scheduleT = 0; rd.t0 = 0;
 
   const chAtStart = rd.ch;
@@ -2022,20 +2037,26 @@ rNext.addEventListener("click", () => readerSkip(1));
    both guards below and its run must be undone when the pair completes */
 let clickRunSi = -1, preClickSi = 0;
 rContent.addEventListener("click", e => {
-  const el = e.target.closest(".sent");
-  if (!el) return;
-  /* a drag-select or double-click-to-look-up INSIDE one sentence dispatches click
-     at that span, and readerPlayFrom is not a passive seek — it starts audio,
-     publishes a playing transport and can kick off the 90 MB model download.
-     Copying a phrase must never start a reading. e.detail > 1 drops the second
-     click of a double-click. (A plain tap always has a collapsed selection by
-     click time, and a programmatic el.click() has detail 0 — both still read.) */
+  /* a drag-select or double-click-to-look-up dispatches click here, and
+     readerPlayFrom is not a passive seek — it starts audio, publishes a playing
+     transport and can kick off the 90 MB model download. Copying a phrase must
+     never start a reading. The second click of a pair is dropped, but it must
+     NOT disarm the undo the first click armed — check detail BEFORE .sent. */
   if (e.detail > 1) return;
+  const el = e.target.closest(".sent");
+  /* a first click that starts no run (line half-leading, a paragraph margin,
+     h2 padding) disarms the undo: clickRunSi/preClickSi would otherwise survive
+     from an earlier interaction and later restore an ancient position */
+  if (!el) { clickRunSi = -1; return; }
   const sel = window.getSelection();
   if (sel && !sel.isCollapsed && rContent.contains(sel.anchorNode)) { clickRunSi = -1; return; }
   preClickSi = rd.si;
   clickRunSi = parseInt(el.dataset.si, 10);
-  readerPlayFrom(clickRunSi);
+  /* no scroll: the tapped sentence is on screen by definition, and re-centring it
+     inside click 1 moves the text under press 2 of a double-click — the browser
+     then selects the wrong word, and press 2 can land on the <p>. Follow-along
+     resumes from the next sentence's own highlightSentence. */
+  readerPlayFrom(clickRunSi, { scroll: false });
 });
 /* double-click-to-look-up: park the run the first click started and put the
    position back where it was — selecting a word must leave the reader as it
@@ -2043,8 +2064,12 @@ rContent.addEventListener("click", e => {
    for a plain tap, and dblclick fires right after the already-dropped second
    click.) An already-started model download keeps running and becomes a warm
    cache, matching every other cancel path. */
-rContent.addEventListener("dblclick", e => {
-  if (clickRunSi < 0 || !e.target.closest(".sent")) return;
+rContent.addEventListener("dblclick", () => {
+  /* no target test: clickRunSi is armed only by the FIRST click of this very pair,
+     and content can move between the two presses (follow-along scroll), so the
+     second press routinely lands in a line's half-leading or a paragraph margin —
+     where the target is the <p>, not the .sent span */
+  if (clickRunSi < 0) return;
   const back = preClickSi;
   clickRunSi = -1;
   readerStopPlayback(); /* bumps rd.token — fences readerPlayFrom's async body */
@@ -2052,8 +2077,14 @@ rContent.addEventListener("dblclick", e => {
   if (audioEl) audioEl.pause();
   if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
   setReaderIcon("play");
-  highlightSentence(back, { scroll: false }); /* also restores rd.si */
-  updateReaderStatus("tap play to resume");
+  /* a finished book parks one PAST the last sentence (si === sentences.length):
+     that sentinel has no span of its own, so position on the last real sentence,
+     then put the sentinel back (highlightSentence assigns rd.si) and keep the
+     end-of-book label — same shape as openReader. */
+  const atEnd = rd.sentences.length > 0 && back >= rd.sentences.length;
+  highlightSentence(atEnd ? rd.sentences.length - 1 : back, { scroll: false });
+  if (atEnd) rd.si = back;
+  updateReaderStatus(atEnd ? "the end" : "tap play to resume");
 });
 backBtn.addEventListener("click", () => { location.hash = "#library"; });
 
@@ -2288,6 +2319,9 @@ async function openReader(id) {
   updateReaderStatus(rd.sentences.length && si >= rd.sentences.length
     ? "the end"
     : (prog && (prog.si > 0 || prog.ch > 0) ? "tap play to resume" : "tap play to listen"));
+  /* once per book: a VoiceOver user hearing nothing gets the same explanation the
+     hint gives sighted users. announce() coalesces with the status line above. */
+  announce(readerHint.textContent);
 }
 
 window.addEventListener("pagehide", () => saveReaderProgress());

@@ -331,6 +331,65 @@ test.describe("reading books aloud", () => {
     expect(await page.evaluate(() => document.querySelector("audio").paused)).toBe(true);
   });
 
+  test("tapping a sentence never scrolls the tapped text out from under the pointer", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 400, chunkSeconds: 1.0 });
+    const endless = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor ".repeat(35).trim();
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "endless.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "Endless", chapters: [{ title: "Run-on", paras: [endless] }] }),
+    });
+    await page.click(".book");
+    await expect(page.locator(".sent").first()).toBeVisible();
+    // pick the lowest sentence whose midpoint is still on screen: a forced
+    // re-centre would move it hundreds of px
+    const target = await page.evaluate(() => {
+      const box = document.getElementById("rScroll").getBoundingClientRect();
+      let best = "0";
+      for (const el of document.querySelectorAll(".sent")) {
+        const r = el.getBoundingClientRect();
+        const mid = (r.top + r.bottom) / 2;
+        if (mid > box.top + 10 && mid < box.bottom - 10) best = el.dataset.si;
+      }
+      return best;
+    });
+    const before = await page.evaluate(() => document.getElementById("rScroll").scrollTop);
+    await page.click(`.sent[data-si="${target}"]`);
+    await page.waitForTimeout(200);
+    const after = await page.evaluate(() => document.getElementById("rScroll").scrollTop);
+    expect(Math.abs(after - before)).toBeLessThanOrEqual(2); // press 2 of a double-click must land on the same text
+  });
+
+  test("double-clicking a word in a finished book keeps 'the end' and its 100%", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "single2.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({ title: "One More", chapters: [{ title: "Alone", paras: ["First line here. Second line here."] }] }),
+    });
+    await page.click(".book");
+    await page.click('.sent[data-si="2"]');
+    await expect(page.locator("#rStatus")).toContainText("the end", { timeout: 15_000 });
+    await page.locator('.sent[data-si="1"]').dblclick(); // look up a word after finishing
+    await page.waitForTimeout(400);
+    await expect(page.locator("#rStatus")).toContainText("the end"); // not "tap play to resume"
+    await expect(page.locator(".sent.speaking")).toHaveAttribute("data-si", "2"); // marker on the last real sentence
+    await page.click("#backBtn");
+    await expect
+      .poll(() => page.evaluate(() => document.querySelector(".b-progress i").style.width), { timeout: 5_000 })
+      .toBe("100%"); // the sentinel survived the round trip
+  });
+
+  test("the silent-switch hint shows while the reader drives audio and clears on teardown", async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS);
+    await expect(page.locator("#readerHint")).toBeHidden();
+    await page.click("#rPlay");
+    await expect(page.locator("#readerHint")).toBeVisible();
+    await page.click("#backBtn");
+    await expect(page.locator("#addBookBtn")).toBeVisible(); // hashchange → teardown is async
+    expect(await page.evaluate(() => document.getElementById("readerHint").hidden)).toBe(true);
+  });
+
   test("books read aloud fully offline after one online visit", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5 });
     await page.goto("/");

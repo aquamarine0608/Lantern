@@ -348,6 +348,28 @@ test.describe("Qwen3-TTS server engine", () => {
     await expect(page.locator("#banner")).toBeHidden();
   });
 
+  test("an engine round-trip during the model download brings the progress banner back", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 4000, progressSteps: 1, chunkDelay: 50, chunkSeconds: 0.5 });
+    await page.goto("/");
+    await importEpub(page);
+    await page.click(".book");
+    await page.click("#rPlay"); // the download starts, banner up
+    await expect(page.locator("#banner")).toBeVisible();
+    await page.click("#fontBtn");
+    await page.click('#engineBtns button[data-e="qwen"]'); // hides the download banner, parks with its own error
+    await expect(page.locator("#bannerText")).toContainText("Set your Qwen3-TTS server first");
+    await page.click('#engineBtns button[data-e="kokoro"]'); // clears the qwen error
+    await expect(page.locator("#banner")).toBeHidden();
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click("#rPlay"); // joins the STILL-in-flight load — the banner must resurface
+    await expect(page.locator("#bannerText")).toContainText(/voice model/i);
+    // a non-error banner floats above an open sheet too (the sheet can start the download)
+    await page.click("#fontBtn");
+    expect(await page.evaluate(() => getComputedStyle(document.getElementById("banner")).position)).toBe("fixed");
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await expect.poll(() => speakingSi(page), { timeout: 20_000 }).toBeGreaterThanOrEqual(0);
+  });
+
   test("a tapped sentence is highlighted immediately, even when the engine fails to warm up", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5 });
     await page.goto("/");
