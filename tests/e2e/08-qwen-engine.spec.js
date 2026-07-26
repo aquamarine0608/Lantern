@@ -990,6 +990,54 @@ test.describe("Qwen3-TTS server engine", () => {
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
   });
 
+  test("the hold banner survives the paste view's own Read tap", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenVoice", "ethan");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "cherry", k: "sk-draft", b: url }));
+    }, QWEN_URL);
+    await page.goto("/#paste");
+    await page.click("#pasteVoiceBtn"); // openSheet → reportQwenShadow
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await expect(page.locator("#banner")).toBeVisible();
+    await startRead(page); // the tap must NOT answer the hold
+    await waitForFileMode(page);
+    await expect(page.locator("#banner")).toBeVisible();
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    const reqs = await getQwenRequests(); // …and it really did read with the live pair
+    expect(reqs[reqs.length - 1].__auth).toBe("Bearer sk-live");
+    expect(reqs[reqs.length - 1].voice).toBe("ethan");
+  });
+
+  test("a typed-then-refused key is re-reported after a route change eats the banner", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "https://new-box.example", v: "", k: "" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.fill("#qwenKey", "sk-typed"); // typed beside new-box's unconfirmed address
+    await page.locator("#qwenKey").blur();
+    await expect(page.locator("#bannerText")).toContainText("Confirm the Server address");
+    await page.fill("#qwenUrl", QWEN_URL); // the user restores the live address instead
+    await page.locator("#qwenUrl").blur();
+    await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click("#pasteModeBtn"); // the route change clears every banner
+    await expect(page.locator("#banner")).toBeHidden();
+    // reopening settings must re-report a TYPED hold, not only a script-restored one
+    await page.click("#pasteVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
+  });
+
   test("a successful book import never clears an unanswered hold banner", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.addInitScript((url) => {

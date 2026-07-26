@@ -614,6 +614,16 @@ function hideBanner() { banner.hidden = true; flushAnnounceQueue(); a11yAlert.te
 /* an error reports on ONE attempt, in ONE view, under ONE engine — and the banner
    has no dismiss control, so anything that invalidates it must clear it */
 function clearErrorBanner() { if (!banner.hidden && banner.classList.contains("error")) hideBanner(); }
+/* the three "Not saved yet" holds are NOT attempt errors: they say the values
+   showing in Voice settings are not the ones reading uses. Starting a reading,
+   importing a book or restarting the reader acts ON that mismatch — it never
+   answers it — so none of those may clear one. The settings commits clear it
+   themselves the moment it IS answered. (The QWEN_HOLD* consts are declared later
+   in the module but only read at event time — no TDZ.) */
+function bannerIsQwenHold() {
+  const t = bannerText.innerHTML;
+  return t === QWEN_HOLD || t === QWEN_HOLD_STALE || t === QWEN_HOLD_DRAFT;
+}
 
 function updateCount() { const n = words(textEl.value); countEl.textContent = `${n} ${n === 1 ? "word" : "words"}`; }
 updateCount();
@@ -1180,7 +1190,10 @@ readBtn.addEventListener("click", async () => {
   const text = textEl.value.trim();
   if (!text) { textEl.focus(); return; }
 
-  clearErrorBanner(); /* stale error from a previous attempt */
+  /* stale error from a PREVIOUS attempt — but never an unanswered qwen hold:
+     sentenceAudioStream is about to snapshot exactly the live values the hold
+     warns about, so this tap acts on the mismatch without answering it */
+  if (!bannerIsQwenHold()) clearErrorBanner();
   resetSession();
   const myToken = ++qrToken;
   qrAbort = new AbortController();
@@ -1749,9 +1762,7 @@ bookFile.addEventListener("change", async () => {
     }
     /* only the error THIS import superseded — never a newer one, and never an
        unanswered qwen hold (the settings commits clear it when it IS answered) */
-    if (errBannerSeq === bannerAtStart &&
-        bannerText.innerHTML !== QWEN_HOLD && bannerText.innerHTML !== QWEN_HOLD_STALE &&
-        bannerText.innerHTML !== QWEN_HOLD_DRAFT) clearErrorBanner();
+    if (errBannerSeq === bannerAtStart && !bannerIsQwenHold()) clearErrorBanner();
     await renderLibrary();
   } finally {
     addBookBtn.disabled = false; addBookBtn.textContent = "Add a book · EPUB";
@@ -2014,9 +2025,7 @@ async function readerPlayFrom(si, { scroll = true } = {}) {
   /* only the error THIS run superseded — never a newer one, and never a standing
      qwen hold (a chapter auto-advance minutes later must not eat an unanswered
      "Not saved yet"; the settings commits clear it themselves when it IS answered) */
-  if (errBannerSeq === bannerAtStart &&
-      bannerText.innerHTML !== QWEN_HOLD && bannerText.innerHTML !== QWEN_HOLD_STALE &&
-      bannerText.innerHTML !== QWEN_HOLD_DRAFT) clearErrorBanner();
+  if (errBannerSeq === bannerAtStart && !bannerIsQwenHold()) clearErrorBanner();
   setReaderIcon(rd.playing ? "pause" : "play"); /* a pause tap during the awaits must stick */
   setReaderMediaSession(rd.playing);
   cancelAnimationFrame(rd.raf);
@@ -2613,8 +2622,18 @@ function refuseSibling(held, why) {
    live one. Reports whichever hold currently applies, with the matching remedy. */
 function reportQwenShadow() {
   if (engine !== "qwen") return;
-  const vHeld = !qwenVoiceTouched && (qwenVoice.value.trim() || "cherry") !== qwenVoiceName;
-  const kHeld = !qwenKeyTouched && qwenKey.value.trim() !== qwenApiKey;
+  /* NOT gated on qwenVoiceTouched/qwenKeyTouched: those flags exist to stop a
+     SCRIPT-restored value from going live on a pristine blur, and they are never
+     reset for the life of the page — gating here made every hold raised for a
+     value the user actually TYPED (commitQwenVoice/commitQwenKey, and
+     commitQwenUrl's stale branch) permanently unreportable. Since showView clears
+     the banner on any route change, one library→paste hop then left the sheet
+     showing a voice/key that is not in use with no banner and — in the STALE case,
+     where the shown address IS the live one — no inline note either. What is shown
+     differing from what reading uses is the whole condition; a value that was
+     accepted can never differ (the commits rewrite the field on success). */
+  const vHeld = (qwenVoice.value.trim() || "cherry") !== qwenVoiceName;
+  const kHeld = qwenKey.value.trim() !== qwenApiKey;
   if (!vHeld && !kHeld) return;
   const shown = normalizeServerUrl(qwenUrl.value);
   const stamps = [];
