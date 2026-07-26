@@ -1229,4 +1229,139 @@ test.describe("Qwen3-TTS server engine", () => {
     expect(reqs[reqs.length - 1].voice).toBe("ethan");
     await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
   });
+
+  test("answering a hold by retyping the live value takes it down — for good", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-old");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "", k: "sk-new", b: url }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    // abandoning the half-finished edit is the normal way out, and it changes no
+    // value — so every clearErrorBanner in the commits (all inside a value-CHANGED
+    // branch) is skipped, and the hold used to stand for the life of the page
+    await page.fill("#qwenKey", "sk-old");
+    await page.locator("#qwenKey").blur();
+    await expect(page.locator("#banner")).toBeHidden();
+    expect(await page.locator("#a11yAlert").textContent()).toBe(""); // nor left in the live region
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).toBeNull();
+    // and it cannot come back: the route exemption and reportQwenShadow's early
+    // return are exactly what made a stale one permanent
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click("#pasteModeBtn");
+    await expect(page.locator("#banner")).toBeHidden();
+    await page.click("#pasteVoiceBtn");
+    await expect(page.locator("#banner")).toBeHidden();
+  });
+
+  test("a hold answered while the address is still blocked comes down too", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      // a valid address the user never confirmed this session — every sibling
+      // commit is refused, so the answer arrives through refuseSibling(false, …)
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "https://host-b.example", v: "", k: "sk-draft", bv: "", bk: "" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("Confirm the Server address");
+    await page.fill("#qwenKey", "sk-live"); // the key shown is now the live one
+    await page.locator("#qwenKey").blur();
+    // nothing is held any more, so the banner's whole claim is false — even though
+    // the commit itself was refused and no value changed
+    await expect(page.locator("#banner")).toBeHidden();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(QWEN_URL);
+    // the unfinished ADDRESS edit is still parked, and the inline note still says so
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull();
+    await expect(page.locator("#qwenDraftNote")).toBeVisible();
+  });
+
+  test("a hold whose values were typed for a THIRD address names the remedy that works", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript(() => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", "https://host-a.example");
+      localStorage.setItem("lantern.qwenVoice", "ethan");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      // host-b sits unconfirmed in the Server field, but the pair was typed for host-c
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({
+        u: "https://host-b.example", v: "newvoice", k: "sk-new",
+        bv: "https://host-c.example", bk: "https://host-c.example",
+      }));
+    });
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    // "confirm the Server address" would be a lie here: the ride gates are strict
+    // equality against the STAMP, so committing host-b releases nothing
+    await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
+    await expect(page.locator("#bannerText")).not.toContainText("Confirm the Server address");
+    // the remedy it does name releases both in a single commit
+    await page.fill("#qwenUrl", "https://host-c.example");
+    await page.locator("#qwenUrl").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenVoice"))).toBe("newvoice");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-new");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).toBeNull();
+    await expect(page.locator("#banner")).toBeHidden();
+  });
+
+  test("the hold re-raised after a successful commit never names the field just saved", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenVoice", "ethan");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      // only the VOICE is held; the key shown is the live one
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "cherry", k: "sk-live", bv: "https://host-b.example", bk: url }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("The voice showing here");
+    await page.fill("#qwenKey", "sk-new"); // saving the key re-reports the VOICE's hold
+    await page.locator("#qwenKey").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-new");
+    await expect(page.locator("#banner")).toBeVisible();
+    // the key WAS saved — a banner claiming otherwise is unverifiable behind type=password
+    await expect(page.locator("#bannerText")).toContainText("The voice showing here");
+    await expect(page.locator("#bannerText")).not.toContainText("API key");
+  });
+
+  test("the mirrored hold names only the key", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenVoice", "ethan");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "ethan", k: "sk-for-b", bv: url, bk: "https://host-b.example" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.fill("#qwenVoice", "sage"); // saving the voice re-reports the KEY's hold
+    await page.locator("#qwenVoice").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenVoice"))).toBe("sage");
+    await expect(page.locator("#bannerText")).toContainText("The API key showing here");
+    await expect(page.locator("#bannerText")).not.toContainText("voice");
+  });
+
+  test("a genuinely held pair still says both — subjects, not per-field boilerplate", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenVoice", "ethan");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "cherry", k: "sk-draft", bv: url, bk: url }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText(
+      "The voice and API key showing here are an unfinished edit — Lantern is still reading with the last ones you saved. Type them again to save them.");
+  });
 });

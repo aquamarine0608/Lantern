@@ -618,12 +618,11 @@ function clearErrorBanner() { if (!banner.hidden && banner.classList.contains("e
    showing in Voice settings are not the ones reading uses. Starting a reading,
    importing a book or restarting the reader acts ON that mismatch — it never
    answers it — so none of those may clear one. The settings commits clear it
-   themselves the moment it IS answered. (The QWEN_HOLD* consts are declared later
-   in the module but only read at event time — no TDZ.) */
-function bannerIsQwenHold() {
-  const t = bannerText.innerHTML;
-  return t === QWEN_HOLD || t === QWEN_HOLD_STALE || t === QWEN_HOLD_DRAFT;
-}
+   themselves the moment it IS answered — clearQwenHold takes one down as soon as
+   nothing is held any more, so the exemption can never strand a false banner.
+   (QWEN_HOLD_TEXTS is declared later in the module but only read at event time,
+   and the one boot-time caller short-circuits on !activeView — no TDZ.) */
+function bannerIsQwenHold() { return QWEN_HOLD_TEXTS.has(bannerText.innerHTML); }
 
 function updateCount() { const n = words(textEl.value); countEl.textContent = `${n} ${n === 1 ? "word" : "words"}`; }
 updateCount();
@@ -2514,7 +2513,7 @@ function commitQwenUrl() {
      contract promises — it must never promote the draft key/voice the boot block
      refused over a working one (password field: the mistake would be invisible).
      And re-typing the LIVE address never adopts siblings stamped for ANOTHER host. */
-  let heldSib = false, heldStale = false;
+  let heldV = false, heldK = false, heldStale = false;
   if (urlChanged || (qwenUrlTouched && sibsMayRide(v))) {
     const dv = qwenVoice.value.trim() || "cherry", dk = qwenKey.value.trim();
     /* per-field engagement holds HERE too: committing an address is engagement with
@@ -2530,11 +2529,11 @@ function commitQwenUrl() {
     const rideK = qwenKeyTouched || (!!qwenKeyBase && qwenKeyBase === v);
     if (dv !== qwenVoiceName) {
       if (rideV) { qwenVoiceName = dv; changed = true; try { localStorage.setItem("lantern.qwenVoice", dv); } catch {} }
-      else { heldSib = true; if (qwenVoiceBase && qwenVoiceBase !== v) heldStale = true; }
+      else { heldV = true; if (qwenVoiceBase && qwenVoiceBase !== v) heldStale = true; }
     }
     if (dk !== qwenApiKey) {
       if (rideK) { qwenApiKey = dk; qwenKey.value = dk; changed = true; try { localStorage.setItem("lantern.qwenKey", dk); } catch {} }
-      else { heldSib = true; if (qwenKeyBase && qwenKeyBase !== v) heldStale = true; }
+      else { heldK = true; if (qwenKeyBase && qwenKeyBase !== v) heldStale = true; }
     }
     /* re-pair PER FIELD: a sibling that rode (or already matches the live value)
        now genuinely travels with v; a held one keeps its own provenance, which
@@ -2552,10 +2551,10 @@ function commitQwenUrl() {
        blur contract promises. */
     const eng = t => qwenUrlTouched || t;
     if (eng(qwenVoiceTouched) && (qwenVoice.value.trim() || "cherry") !== qwenVoiceName) {
-      heldSib = true; if (qwenVoiceBase && qwenVoiceBase !== v) heldStale = true;
+      heldV = true; if (qwenVoiceBase && qwenVoiceBase !== v) heldStale = true;
     }
     if (eng(qwenKeyTouched) && qwenKey.value.trim() !== qwenApiKey) {
-      heldSib = true; if (qwenKeyBase && qwenKeyBase !== v) heldStale = true;
+      heldK = true; if (qwenKeyBase && qwenKeyBase !== v) heldStale = true;
     }
   }
   if (changed) {
@@ -2568,8 +2567,12 @@ function commitQwenUrl() {
      beside another address, so "put that other address back" is real. One held on
      the "" wildcard was typed with NO address shown — there is no other address to
      restore; name the draft remedy instead, exactly as reportQwenShadow does. */
-  if (heldSib) refuseSibling(true, heldStale ? QWEN_HOLD_STALE : QWEN_HOLD_DRAFT);
+  if (heldV || heldK) refuseSibling(true, (heldStale ? QWEN_HOLD_STALE : QWEN_HOLD_DRAFT)(HOLD_SUBJ(heldV, heldK)));
   flushQwenFields(); /* clears the draft once nothing is uncommitted */
+  /* the no-change + nothing-held path reaches neither clearErrorBanner above nor a
+     re-report — and it is exactly how a user answers a hold by putting the live
+     address back, so a hold standing here has just been answered */
+  clearQwenHold();
   updateQwenDraftNote();
 }
 /* the three fields are ONE config, and a draft-restored Server field is pristine —
@@ -2601,19 +2604,50 @@ function commitShownServer() {
    showing a config that is not the one in use, with the chip reading "server voice".
    Announced only when a value is genuinely being held back, so a focus-and-leave
    over a draft stays free; error:true also reaches the live region via announce(). */
-const QWEN_HOLD = `<b>Not saved yet.</b> Confirm the Server address in Voice settings first — the voice and API key you typed are still waiting on it.`;
+/* SUBJECT, not boilerplate: only ONE of the pair is held in most of these states —
+   a commit that just saved the voice re-reports the hold standing for the KEY, and
+   pair wording there tells the user the value they just saved is not in use ("type
+   them again to save them"), which for a type=password key they cannot even check.
+   Every refusal site knows its own per-field held-ness, so name exactly it. */
+const HOLD_SUBJ = (v, k) => v && k
+  ? { s: "voice and API key", be: "are", was: "were", them: "them", ones: "ones" }
+  : k ? { s: "API key", be: "is", was: "was", them: "it", ones: "one" }
+      : { s: "voice", be: "is", was: "was", them: "it", ones: "one" };
+const QWEN_HOLD = ({ s, be }) => `<b>Not saved yet.</b> Confirm the Server address in Voice settings first — the ${s} you typed ${be} still waiting on it.`;
 /* the provenance refusal needs a DIFFERENT remedy: the address shown is already the
    live one, so "confirm the address" is a guaranteed no-op — a held field's stamp is
    only re-paired inside commitQwenUrl's adoption branch when its ride gate passes,
    and re-committing the same address can never pass it. Name what actually
    releases the values. */
-const QWEN_HOLD_STALE = `<b>Not saved yet.</b> The voice and API key showing here were typed for a different server address. Type them again for the address now shown to save them — or put that other address back.`;
+const QWEN_HOLD_STALE = ({ s, was, them }) => `<b>Not saved yet.</b> The ${s} showing here ${was} typed for a different server address. Type ${them} again for the address now shown to save ${them} — or put that other address back.`;
 /* a draft-restored (never-touched) voice/key has no host mismatch to name — it is
    simply an unfinished edit the pristine guards will keep refusing silently */
-const QWEN_HOLD_DRAFT = `<b>Not saved yet.</b> The voice and API key showing here are an unfinished edit — Lantern is still reading with the last ones you saved. Type them again to save them.`;
+const QWEN_HOLD_DRAFT = ({ s, be, them, ones }) => `<b>Not saved yet.</b> The ${s} showing here ${be} an unfinished edit — Lantern is still reading with the last ${ones} you saved. Type ${them} again to save ${them}.`;
+/* hold IDENTITY is a text match (bannerIsQwenHold), so every wording variant has to
+   be enumerable — three subjects × three remedies. (v=false,k=false never renders:
+   nothing held raises no hold.) */
+const QWEN_HOLD_TEXTS = new Set();
+for (const [v, k] of [[true, true], [true, false], [false, true]])
+  for (const f of [QWEN_HOLD, QWEN_HOLD_STALE, QWEN_HOLD_DRAFT]) QWEN_HOLD_TEXTS.add(f(HOLD_SUBJ(v, k)));
+/* the mirror of refuseSibling: a hold asserts the voice/key SHOWING here are not the
+   ones reading uses, so the moment that stops being true it must come down. Every
+   clearErrorBanner in the commits sits inside a value-CHANGED branch, so a divergence
+   that ends WITHOUT an adoption — the user retyping the live value back, or settling
+   an address the pair then rides — otherwise leaves the hold standing for the life of
+   the page: bannerIsQwenHold() now suppresses the route-change / read / import clears,
+   and reportQwenShadow bails on !vHeld && !kHeld so even a sheet reopen cannot
+   re-evaluate it. Exactly reportQwenShadow's condition, negated: what it would not
+   report, this takes down. Retraction only — it can never RAISE a banner, so a
+   pristine focus-and-leave stays the no-op the blur contract promises. */
+function clearQwenHold() {
+  if (banner.hidden || !bannerIsQwenHold()) return;
+  if ((qwenVoice.value.trim() || "cherry") !== qwenVoiceName) return; /* still held */
+  if (qwenKey.value.trim() !== qwenApiKey) return;
+  hideBanner();
+}
 function refuseSibling(held, why) {
   flushQwenFields(); /* the value still rides in the draft */
-  if (!held) return;
+  if (!held) { clearQwenHold(); return; } /* a hold this commit ANSWERED must go */
   if (!banner.hidden && bannerText.innerHTML === why) return; /* change+blur are ONE gesture — say it once */
   showBanner(why, { error: true });
 }
@@ -2634,7 +2668,7 @@ function reportQwenShadow() {
      accepted can never differ (the commits rewrite the field on success). */
   const vHeld = (qwenVoice.value.trim() || "cherry") !== qwenVoiceName;
   const kHeld = qwenKey.value.trim() !== qwenApiKey;
-  if (!vHeld && !kHeld) return;
+  if (!vHeld && !kHeld) { clearQwenHold(); return; } /* a hold nothing answers must not outlive its subject */
   const shown = normalizeServerUrl(qwenUrl.value);
   const stamps = [];
   if (vHeld) stamps.push(qwenVoiceBase);
@@ -2653,22 +2687,31 @@ function reportQwenShadow() {
      from overwriting their correct message with a wrong one. The condition is the
      exact negation of commitShownServer's success set: with shown !== qwenServer its
      `!v && !qwenServer` early-true is unreachable, so it cannot mis-fire. */
-  const serverBlocks = shown !== qwenServer && (!shown || !qwenUrlTouched);
+  /* ...but only while confirming the shown address CAN release the pair. A held value
+     stamped for ANOTHER address is refused by the ride gates whatever happens to the
+     shown one, so QWEN_HOLD would name a remedy that commits the address and releases
+     nothing — and commitQwenUrl's own refusal would overwrite it with QWEN_HOLD_STALE
+     one tap later. Restoring that other address settles the address AND releases the
+     values in one commit, so the cross-host remedy wins here. */
+  const foreign = stamps.some(b => b && b !== shown);
+  const serverBlocks = shown !== qwenServer && (!shown || !qwenUrlTouched) && !foreign;
   const why = serverBlocks ? QWEN_HOLD
     : shown && shown !== qwenServer && stamps.every(b => b === shown) ? QWEN_HOLD
-    : stamps.some(b => b && b !== shown) ? QWEN_HOLD_STALE
+    : foreign ? QWEN_HOLD_STALE
     : QWEN_HOLD_DRAFT;
-  refuseSibling(true, why);
+  refuseSibling(true, why(HOLD_SUBJ(vHeld, kHeld))); /* name only what is actually held */
 }
 function commitQwenVoice() {
   const v = qwenVoice.value.trim() || "cherry";
   if (!qwenVoiceTouched && v !== qwenVoiceName) { flushQwenFields(); return; } /* pristine draft value — keep it in the draft, never promote it */
-  if (!commitShownServer()) { refuseSibling(v !== qwenVoiceName, QWEN_HOLD); return; }
+  /* read LATE: commitShownServer can commit an address that releases the sibling */
+  const subj = () => HOLD_SUBJ(v !== qwenVoiceName, qwenKey.value.trim() !== qwenApiKey);
+  if (!commitShownServer()) { refuseSibling(v !== qwenVoiceName, QWEN_HOLD(subj())); return; }
   /* even a green-lit address refuses a voice STAMPED for another host: it was
      typed while a different address was shown, and must wait for that address.
      Only the voice's OWN stamp counts — a stale KEY stamp must not park a voice
      the user just typed for the live address. */
-  if (qwenVoiceBase && qwenVoiceBase !== qwenServer) { refuseSibling(v !== qwenVoiceName, QWEN_HOLD_STALE); return; }
+  if (qwenVoiceBase && qwenVoiceBase !== qwenServer) { refuseSibling(v !== qwenVoiceName, QWEN_HOLD_STALE(subj())); return; }
   if (v !== qwenVoiceName) {
     qwenVoiceName = v;
     try { localStorage.setItem("lantern.qwenVoice", v); } catch {}
@@ -2683,13 +2726,15 @@ function commitQwenVoice() {
     readerSettingsChanged();
   }
   flushQwenFields();
+  clearQwenHold(); /* the equal-value fallthrough skips the branch above entirely */
   updateQwenDraftNote();
 }
 function commitQwenKey() {
   const v = qwenKey.value.trim();
   if (!qwenKeyTouched && v !== qwenApiKey) { flushQwenFields(); return; } /* pristine draft value — keep it in the draft, never promote it */
-  if (!commitShownServer()) { refuseSibling(v !== qwenApiKey, QWEN_HOLD); return; }
-  if (qwenKeyBase && qwenKeyBase !== qwenServer) { refuseSibling(v !== qwenApiKey, QWEN_HOLD_STALE); return; }
+  const subj = () => HOLD_SUBJ((qwenVoice.value.trim() || "cherry") !== qwenVoiceName, v !== qwenApiKey);
+  if (!commitShownServer()) { refuseSibling(v !== qwenApiKey, QWEN_HOLD(subj())); return; }
+  if (qwenKeyBase && qwenKeyBase !== qwenServer) { refuseSibling(v !== qwenApiKey, QWEN_HOLD_STALE(subj())); return; }
   qwenKey.value = v;
   if (v !== qwenApiKey) {
     qwenApiKey = v;
@@ -2699,6 +2744,7 @@ function commitQwenKey() {
     readerSettingsChanged();
   }
   flushQwenFields();
+  clearQwenHold(); /* the equal-value fallthrough skips the branch above entirely */
   updateQwenDraftNote();
 }
 for (const [el, commit] of [[qwenUrl, commitQwenUrl], [qwenVoice, commitQwenVoice], [qwenKey, commitQwenKey]]) {
