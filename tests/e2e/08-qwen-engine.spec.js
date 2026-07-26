@@ -871,4 +871,96 @@ test.describe("Qwen3-TTS server engine", () => {
     await page.locator("#qwenKey").blur();
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-finished");
   });
+
+  test("a voice keystroke never rewrites the KEY's provenance — the parked key stays parked", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", "https://host-a.example");
+      localStorage.setItem("lantern.qwenKey", "sk-A");
+      // a parked key typed for x.example, draft address since rewritten to url
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "", k: "sk-x", b: "https://x.example" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    // typing a VOICE stamps only the voice's provenance — a shared stamp used to
+    // re-pair the key with the shown address here, releasing it to the wrong host
+    await page.fill("#qwenVoice", "ethan");
+    await page.click("#qwenUseShown"); // commit the shown address
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(QWEN_URL);
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenVoice"))).toBe("ethan"); // the user's own act rides
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-A"); // x.example's key does NOT
+    await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull();
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    await page.click("#pasteModeBtn");
+    await startRead(page);
+    await waitForFileMode(page);
+    const reqs = await getQwenRequests();
+    expect(reqs[reqs.length - 1].__auth).toBe("Bearer sk-A"); // never sk-x
+    expect(reqs[reqs.length - 1].voice).toBe("ethan");
+  });
+
+  test("a key typed beside NO address is an unfinished edit — never called cross-host", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-old");
+      // the natural order: clear the address, type the new key, get suspended
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "", v: "", k: "sk-new", b: "" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    // the shadow report calls it what it is — there is no "other address" to restore
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    // confirming the live address holds the pristine key and REPEATS the right remedy
+    await page.fill("#qwenUrl", QWEN_URL);
+    await page.locator("#qwenUrl").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-old");
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    await expect(page.locator("#bannerText")).not.toContainText("different server address");
+    // …and the remedy it names actually works: retyping commits
+    await page.fill("#qwenKey", "sk-new");
+    await page.locator("#qwenKey").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-new");
+  });
+
+  test("restoring the live address replaces the now-impossible 'confirm the address' banner", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      // a whole parked edit for another box: address + key, stamped for it
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "https://new-box.example", v: "", k: "sk-b", b: "https://new-box.example" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    // on open, the promise is real: confirming new-box's address WOULD release sk-b
+    await expect(page.locator("#bannerText")).toContainText("Confirm the Server address");
+    // the user decides against the new box and restores the live address instead —
+    // that banner's remedy is now impossible and must be replaced, not left standing
+    await page.fill("#qwenUrl", QWEN_URL);
+    await page.locator("#qwenUrl").blur();
+    await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull();
+  });
+
+  test("switching Engine to Qwen3-TTS inside an open sheet reports a held key immediately", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "kokoro"); // qwen fields hidden at open
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "", k: "sk-shadow", b: url }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn"); // opens on kokoro — the shadow report bails here
+    await expect(page.locator("#banner")).toBeHidden();
+    await page.click('#engineBtns button[data-e="qwen"]'); // the fields become visible NOW
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live"); // shown ≠ used
+  });
 });

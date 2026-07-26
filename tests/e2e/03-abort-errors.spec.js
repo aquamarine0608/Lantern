@@ -248,4 +248,19 @@ test.describe("stopping and error paths", () => {
     await page.click("#playBtn");
     await waitForFileMode(page);
   });
+
+  test("finishing generation while paused says 'paused', not 'still playing'", async ({ page, mockTTS }) => {
+    // synthesis deliberately continues through a pause — the terminal done-live
+    // status must reflect the transport's real state, not assert "still playing"
+    await mockTTS({ loadDelay: 20, chunkDelay: 300, chunkSeconds: 2.0 });
+    await page.goto("/#paste");
+    await startRead(page, "First long sentence here. Second long sentence here. Third long sentence here.");
+    await expect(page.locator("#statusLine")).toContainText(/sentence/, { timeout: 15_000 });
+    await page.click("#playBtn"); // pause mid-generation — the context suspends
+    await expect(page.locator("#statusLine")).toContainText("Finished generating", { timeout: 15_000 });
+    await expect(page.locator("#statusLine")).toContainText("paused · ready to save");
+    await expect(page.locator("#statusLine")).not.toContainText("still playing");
+    await page.click("#playBtn"); // resume — the line follows the transport
+    await expect(page.locator("#statusLine")).toContainText("still playing");
+  });
 });

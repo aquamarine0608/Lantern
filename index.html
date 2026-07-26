@@ -917,9 +917,21 @@ function withGenLock(fn) {
 }
 
 const genLabel = () => engine === "qwen" ? "streaming from your Qwen3-TTS server" : "generating on-device";
+/* the done-live line is TERMINAL — nothing rewrites it until live playback drains
+   into switchToFile — so it must not hardcode "still playing": synthesis deliberately
+   continues through a pause (togglePlay only suspends the context), and a session
+   paused at any point before this line lands would sit forever asserting the
+   opposite of its own icon and of mediaSession.playbackState. */
+const doneLiveStatus = playing => `Finished generating — ${fmt(totalDur)} total · ${playing ? "still playing" : "paused"} · ready to save`;
 
 /* ---------------- waveform ---------------- */
 const dpr = Math.min(window.devicePixelRatio || 1, 3);
+/* roundRect is Safari 16.4+ / Chrome 99+, above this file's floor (see
+   ABBREV_END_RE's no-lookbehind note and the px fallback for 2lh). Unguarded it
+   would throw from every rAF frame in tick(), leaving the wave blank for the
+   whole reading and killing the visual scrub feedback. */
+const CAN_ROUND = typeof CanvasRenderingContext2D !== "undefined" &&
+  typeof CanvasRenderingContext2D.prototype.roundRect === "function";
 function sizeCanvas() {
   const r = wave.getBoundingClientRect();
   if (r.width === 0) return;
@@ -945,7 +957,9 @@ function drawWave(frac) {
     const x = i * (bw + gap);
     g.fillStyle = x < playedX ? "#F2B24C" : "rgba(143,160,184,0.35)";
     const y = (H - h) / 2;
-    g.beginPath(); g.roundRect(x, y, bw, h, bw / 2); g.fill();
+    g.beginPath();
+    if (CAN_ROUND) g.roundRect(x, y, bw, h, bw / 2); else g.rect(x, y, bw, h);
+    g.fill();
   }
 }
 
@@ -1111,6 +1125,7 @@ function togglePlay(force) {
     if (wantPlay) { ctx.resume(); if (audioEl) audioEl.play().catch(() => {}); }
     else ctx.suspend();
     setPlayIcon(wantPlay);
+    if (mode === "done-live") statusLine.textContent = doneLiveStatus(wantPlay);
   }
   setMediaSession(wantPlay);
 }
@@ -1186,6 +1201,9 @@ readBtn.addEventListener("click", async () => {
   liveCtx.onstatechange = () => { /* calls, Siri, alarms interrupt the context on iOS — keep the icon honest */
     if (ctx !== liveCtx || (mode !== "generating" && mode !== "done-live")) return;
     setPlayIcon(liveCtx.state === "running");
+    /* the terminal done-live line must follow too — suspend()/resume() settle async,
+       and OS interruptions reach the context only through this handler */
+    if (mode === "done-live") statusLine.textContent = doneLiveStatus(liveCtx.state === "running");
   };
   try { await ctx.resume(); } catch {} /* a concurrent teardown closes the context — a rejected resume is not an error */
   /* activating the audio session is a REAL await on iOS and when the browser routes
@@ -1293,7 +1311,7 @@ readBtn.addEventListener("click", async () => {
 
   mode = "done-live";
   saveBtn.disabled = false; /* chunks are complete the moment generation ends — exporting must not wait for playback to drain */
-  statusLine.textContent = `Finished generating — ${fmt(totalDur)} total · still playing · ready to save`;
+  statusLine.textContent = doneLiveStatus(ctx.state === "running");
   /* the rAF handoff check is throttled when the screen locks — also hand off
      when the last scheduled buffer actually finishes playing */
   const lastSrc = sources[sources.length - 1];
@@ -2358,6 +2376,14 @@ function setEngine(e) {
   stopQuickReadForEngineChange(); /* the footer must never claim an engine the live session isn't using */
   applyEngineUI();
   readerSettingsChanged();
+  /* the qwen fields are display:none under the other engine, so THIS is the moment
+     they first become visible — openSheet's shadow report already ran and bailed on
+     engine !== "qwen". Without this a script-restored voice/key that is not the
+     live one is shown as if it were: the note (updateQwenDraftNote) covers only
+     Server divergence, and Done fires no blur commit because focus is on the
+     Engine button. Placed AFTER the banner-clearing calls above so the hold banner
+     survives; reportQwenShadow is a no-op when switching to kokoro. */
+  if (!setSheet.hidden) reportQwenShadow();
 }
 engineBtns.addEventListener("click", ev => {
   const b = ev.target.closest("button");
@@ -2377,14 +2403,21 @@ let qwenUrlTouched = false;
 qwenUrl.addEventListener("input", () => { qwenUrlTouched = true; });
 /* PROVENANCE for the voice/key: the address that was SHOWN beside them when they
    were typed — the only address they may be committed against unless the Server
-   field itself is being committed. "" (nothing shown) rides along with anything:
-   there was no host to type for. A keystroke re-stamps; the boot restore stamps
-   the restored draft. Without this, a key typed for server B while B's address
-   sat unconfirmed in the field would commit against still-live server A the
-   moment the user restored A's address — a Bearer token to the wrong host,
-   silently and persistently. */
-let qwenSibBase = "";
-const stampSibs = () => { qwenSibBase = normalizeServerUrl(qwenUrl.value); };
+   field itself is being committed. "" (nothing shown) means "typed beside no host":
+   a direct voice/key commit lets it through, but a Server commit never adopts a
+   PRISTINE sibling on that wildcard — retyping is the release. A keystroke
+   re-stamps its own field; the boot restore stamps the restored draft. Without
+   this, a key typed for server B while B's address sat unconfirmed in the field
+   would commit against still-live server A the moment the user restored A's
+   address — a Bearer token to the wrong host, silently and persistently. */
+/* one stamp PER FIELD: a shared stamp let a keystroke in the Voice field rewrite
+   the KEY's provenance to whatever the Server field showed at that instant — the
+   very next commit of that address then adopted a script-restored key that was
+   typed beside a completely different host, invisibly (type=password). A keystroke
+   may only re-stamp its own field. */
+let qwenVoiceBase = "", qwenKeyBase = "";
+const stampVoice = () => { qwenVoiceBase = normalizeServerUrl(qwenUrl.value); };
+const stampKey = () => { qwenKeyBase = normalizeServerUrl(qwenUrl.value); };
 /* per-field engagement, exactly the qwenUrlTouched contract: a value only a SCRIPT
    put in the field (the boot draft restore) must never go live because focus passed
    through it. The key field is type=password, so such a promotion is invisible — and
@@ -2392,9 +2425,11 @@ const stampSibs = () => { qwenSibBase = normalizeServerUrl(qwenUrl.value); };
    leaving the working key nowhere. A keystroke is engagement; a pristine
    focus-and-leave stays the no-op the blur contract promises. */
 let qwenVoiceTouched = false, qwenKeyTouched = false;
-qwenVoice.addEventListener("input", () => { qwenVoiceTouched = true; stampSibs(); });
-qwenKey.addEventListener("input", () => { qwenKeyTouched = true; stampSibs(); });
-const sibsMayRide = v => !qwenSibBase || qwenSibBase === v;
+qwenVoice.addEventListener("input", () => { qwenVoiceTouched = true; stampVoice(); });
+qwenKey.addEventListener("input", () => { qwenKeyTouched = true; stampKey(); });
+/* the conservative AND of both stamps — gate shapes stay unchanged, and a foreign
+   stamp on EITHER field parks the pair until each is released on its own terms */
+const sibsMayRide = v => (!qwenVoiceBase || qwenVoiceBase === v) && (!qwenKeyBase || qwenKeyBase === v);
 /* inline, always-visible divergence note: banners can be missed or dismissed, and
    Escape/backdrop dismissals never fire a blur commit at all — this note lives in
    the sheet beside the field, states which address reading ACTUALLY uses, and
@@ -2432,45 +2467,59 @@ function commitQwenUrl() {
      contract promises — it must never promote the draft key/voice the boot block
      refused over a working one (password field: the mistake would be invisible).
      And re-typing the LIVE address never adopts siblings stamped for ANOTHER host. */
-  let heldSib = false;
+  let heldSib = false, heldStale = false;
   if (urlChanged || (qwenUrlTouched && sibsMayRide(v))) {
     const dv = qwenVoice.value.trim() || "cherry", dk = qwenKey.value.trim();
     /* per-field engagement holds HERE too: committing an address is engagement with
        the ADDRESS. A sibling the user typed this session travels with their own act
        whatever the stamp says; a sibling only a SCRIPT put in the field (the boot
-       draft restore) rides only if it was typed beside THIS VERY address — never on
+       draft restore) rides only if ITS OWN stamp names this very address — never on
        the "" wildcard, and never against a host it was not typed for. Otherwise a
        working key would be overwritten, invisibly (type=password), by the draft the
        boot block just refused, and the flush below would delete the only copy. */
-    const rideV = qwenVoiceTouched || qwenSibBase === v;
-    const rideK = qwenKeyTouched || qwenSibBase === v;
+    const rideV = qwenVoiceTouched || qwenVoiceBase === v;
+    const rideK = qwenKeyTouched || qwenKeyBase === v;
     if (dv !== qwenVoiceName) {
       if (rideV) { qwenVoiceName = dv; changed = true; try { localStorage.setItem("lantern.qwenVoice", dv); } catch {} }
-      else heldSib = true;
+      else { heldSib = true; if (qwenVoiceBase && qwenVoiceBase !== v) heldStale = true; }
     }
     if (dk !== qwenApiKey) {
       if (rideK) { qwenApiKey = dk; qwenKey.value = dk; changed = true; try { localStorage.setItem("lantern.qwenKey", dk); } catch {} }
-      else heldSib = true;
+      else { heldSib = true; if (qwenKeyBase && qwenKeyBase !== v) heldStale = true; }
     }
-    /* only re-pair when nothing was held: a held value keeps its own provenance,
-       which flushQwenFields persists as the draft's `b` */
-    if (!heldSib) stampSibs();
+    /* re-pair PER FIELD: a sibling that rode (or already matches the live value)
+       now genuinely travels with v; a held one keeps its own provenance, which
+       flushQwenFields persists with the draft */
+    if (rideV || dv === qwenVoiceName) qwenVoiceBase = v;
+    if (rideK || dk === qwenApiKey) qwenKeyBase = v;
   } else if (!sibsMayRide(v)) {
     /* adoption skipped while the shown address IS (or just became) the live one and
-       the siblings are stamped for ANOTHER host — QWEN_HOLD's "confirm the Server
-       address" is a guaranteed no-op here. Restate the remedy that still works —
-       but only for a value the user actually typed, so a pristine focus-and-leave
-       over a restored draft stays the silent no-op the blur contract promises. */
-    heldSib = (qwenVoiceTouched && (qwenVoice.value.trim() || "cherry") !== qwenVoiceName)
-           || (qwenKeyTouched && qwenKey.value.trim() !== qwenApiKey);
+       a sibling is stamped for ANOTHER host — QWEN_HOLD's "confirm the Server
+       address" is a guaranteed no-op here. Restate the remedy that still works.
+       Committing an ADDRESS the user typed is engagement for the pair too: they
+       just did what QWEN_HOLD told them to and it changed nothing, so the banner
+       must be replaced by the remedy that does work. A pristine focus-and-leave
+       (qwenUrlTouched false, nothing typed anywhere) stays the silent no-op the
+       blur contract promises. */
+    const eng = t => qwenUrlTouched || t;
+    if (eng(qwenVoiceTouched) && (qwenVoice.value.trim() || "cherry") !== qwenVoiceName) {
+      heldSib = true; if (qwenVoiceBase && qwenVoiceBase !== v) heldStale = true;
+    }
+    if (eng(qwenKeyTouched) && qwenKey.value.trim() !== qwenApiKey) {
+      heldSib = true; if (qwenKeyBase && qwenKeyBase !== v) heldStale = true;
+    }
   }
   if (changed) {
     clearErrorBanner(); /* "set your server first" / "check the API key" are answered by a real commit */
     applyEngineUI();
     readerSettingsChanged();
   }
-  /* AFTER clearErrorBanner (which would otherwise hide it in the same call) */
-  if (heldSib) refuseSibling(true, QWEN_HOLD_STALE);
+  /* AFTER clearErrorBanner (which would otherwise hide it in the same call).
+     Which remedy: a sibling held against a NON-EMPTY foreign stamp really was typed
+     beside another address, so "put that other address back" is real. One held on
+     the "" wildcard was typed with NO address shown — there is no other address to
+     restore; name the draft remedy instead, exactly as reportQwenShadow does. */
+  if (heldSib) refuseSibling(true, heldStale ? QWEN_HOLD_STALE : QWEN_HOLD_DRAFT);
   flushQwenFields(); /* clears the draft once nothing is uncommitted */
   updateQwenDraftNote();
 }
@@ -2505,9 +2554,9 @@ function commitShownServer() {
    over a draft stays free; error:true also reaches the live region via announce(). */
 const QWEN_HOLD = `<b>Not saved yet.</b> Confirm the Server address in Voice settings first — the voice and API key you typed are still waiting on it.`;
 /* the provenance refusal needs a DIFFERENT remedy: the address shown is already the
-   live one, so "confirm the address" is a guaranteed no-op — stampSibs() is reached
-   only inside commitQwenUrl's adoption branch, which needs urlChanged or a matching
-   stamp, and re-committing the same address can produce neither. Name what actually
+   live one, so "confirm the address" is a guaranteed no-op — a held field's stamp is
+   only re-paired inside commitQwenUrl's adoption branch when its ride gate passes,
+   and re-committing the same address can never pass it. Name what actually
    releases the values. */
 const QWEN_HOLD_STALE = `<b>Not saved yet.</b> The voice and API key showing here were typed for a different server address. Type them again for the address now shown to save them — or put that other address back.`;
 /* a draft-restored (never-touched) voice/key has no host mismatch to name — it is
@@ -2527,8 +2576,16 @@ function reportQwenShadow() {
   const vHeld = !qwenVoiceTouched && (qwenVoice.value.trim() || "cherry") !== qwenVoiceName;
   const kHeld = !qwenKeyTouched && qwenKey.value.trim() !== qwenApiKey;
   if (!vHeld && !kHeld) return;
-  const why = normalizeServerUrl(qwenUrl.value) !== qwenServer ? QWEN_HOLD
-    : !sibsMayRide(qwenServer) ? QWEN_HOLD_STALE
+  const shown = normalizeServerUrl(qwenUrl.value);
+  const stamps = [];
+  if (vHeld) stamps.push(qwenVoiceBase);
+  if (kHeld) stamps.push(qwenKeyBase);
+  /* QWEN_HOLD promises that confirming the SHOWN address releases the values — the
+     ride gates are strict equality, so that is only true when every held value was
+     stamped for that very address. A non-empty foreign stamp gets the cross-host
+     remedy; the "" wildcard (typed beside no address) is an unfinished edit. */
+  const why = shown && shown !== qwenServer && stamps.every(b => b === shown) ? QWEN_HOLD
+    : stamps.some(b => b && b !== shown) ? QWEN_HOLD_STALE
     : QWEN_HOLD_DRAFT;
   refuseSibling(true, why);
 }
@@ -2536,9 +2593,11 @@ function commitQwenVoice() {
   const v = qwenVoice.value.trim() || "cherry";
   if (!qwenVoiceTouched && v !== qwenVoiceName) { flushQwenFields(); return; } /* pristine draft value — keep it in the draft, never promote it */
   if (!commitShownServer()) { refuseSibling(v !== qwenVoiceName, QWEN_HOLD); return; }
-  /* even a green-lit address refuses siblings STAMPED for another host: they were
-     typed while a different address was shown, and must wait for that address */
-  if (!sibsMayRide(qwenServer)) { refuseSibling(v !== qwenVoiceName, QWEN_HOLD_STALE); return; }
+  /* even a green-lit address refuses a voice STAMPED for another host: it was
+     typed while a different address was shown, and must wait for that address.
+     Only the voice's OWN stamp counts — a stale KEY stamp must not park a voice
+     the user just typed for the live address. */
+  if (qwenVoiceBase && qwenVoiceBase !== qwenServer) { refuseSibling(v !== qwenVoiceName, QWEN_HOLD_STALE); return; }
   if (v !== qwenVoiceName) {
     qwenVoiceName = v;
     try { localStorage.setItem("lantern.qwenVoice", v); } catch {}
@@ -2552,7 +2611,7 @@ function commitQwenKey() {
   const v = qwenKey.value.trim();
   if (!qwenKeyTouched && v !== qwenApiKey) { flushQwenFields(); return; } /* pristine draft value — keep it in the draft, never promote it */
   if (!commitShownServer()) { refuseSibling(v !== qwenApiKey, QWEN_HOLD); return; }
-  if (!sibsMayRide(qwenServer)) { refuseSibling(v !== qwenApiKey, QWEN_HOLD_STALE); return; }
+  if (qwenKeyBase && qwenKeyBase !== qwenServer) { refuseSibling(v !== qwenApiKey, QWEN_HOLD_STALE); return; }
   qwenKey.value = v;
   if (v !== qwenApiKey) {
     qwenApiKey = v;
@@ -2578,11 +2637,11 @@ function flushQwenFields() {
     if (normalizeServerUrl(u) === qwenServer &&
         (v.trim() || "cherry") === qwenVoiceName &&
         k.trim() === qwenApiKey) { clearQwenDraft(); return; } /* nothing uncommitted */
-    /* b: the provenance stamp travels WITH the draft. The draft's `u` cannot carry
-       it — commitQwenUrl rewrites the field (and so the flushed u) when the user
-       answers a refusal by restoring the live address, but the parked voice/key
-       were still typed beside the OTHER host. */
-    localStorage.setItem(QDRAFT, JSON.stringify({ u, v, k, b: qwenSibBase }));
+    /* bv/bk: each field's provenance stamp travels WITH the draft. The draft's `u`
+       cannot carry it — commitQwenUrl rewrites the field (and so the flushed u)
+       when the user answers a refusal by restoring the live address, but a parked
+       voice/key was still typed beside the OTHER host. */
+    localStorage.setItem(QDRAFT, JSON.stringify({ u, v, k, bv: qwenVoiceBase, bk: qwenKeyBase }));
   } catch {}
 }
 window.addEventListener("pagehide", flushQwenFields);
@@ -2592,14 +2651,16 @@ qwenVoice.value = qwenVoiceName;
 qwenKey.value = qwenApiKey;
 /* show any edit the user was interrupted mid-way through — in the fields only;
    reading continues with the last committed address until they blur/commit */
-let draftSib = null; /* provenance must outlive the session */
+let draftSibV = null, draftSibK = null; /* provenance must outlive the session */
 try {
   const d = JSON.parse(localStorage.getItem(QDRAFT) || "null");
   if (d && typeof d === "object") {
     if (typeof d.u === "string") qwenUrl.value = d.u;
     if (typeof d.v === "string") qwenVoice.value = d.v;
     if (typeof d.k === "string") qwenKey.value = d.k;
-    if (typeof d.b === "string") draftSib = d.b;
+    if (typeof d.b === "string") { draftSibV = d.b; draftSibK = d.b; } /* pre-split drafts carried one shared stamp */
+    if (typeof d.bv === "string") draftSibV = d.bv;
+    if (typeof d.bk === "string") draftSibK = d.bk;
   }
 } catch { clearQwenDraft(); }
 /* a draft may only shadow a WORKING value. With nothing ever committed for a
@@ -2609,10 +2670,11 @@ try {
    type=password field. A script-restored value fires neither `change` nor
    `blur`, so without this it could never become live. */
 {
-  /* the stamp the draft was flushed with, NOT the address it now shows: commitQwenUrl
-     rewrites `u` when it refuses the siblings, so `u` cannot carry provenance.
+  /* the stamps the draft was flushed with, NOT the address it now shows: commitQwenUrl
+     rewrites `u` when it refuses a sibling, so `u` cannot carry provenance.
      Drafts written by older builds carry no stamp — fall back to the shown address. */
-  qwenSibBase = draftSib === null ? normalizeServerUrl(qwenUrl.value) : draftSib;
+  qwenVoiceBase = draftSibV === null ? normalizeServerUrl(qwenUrl.value) : draftSibV;
+  qwenKeyBase = draftSibK === null ? normalizeServerUrl(qwenUrl.value) : draftSibK;
   let hadVoice = null, hadKey = null;
   try { hadVoice = localStorage.getItem("lantern.qwenVoice"); hadKey = localStorage.getItem("lantern.qwenKey"); } catch {}
   if (!qwenServer && normalizeServerUrl(qwenUrl.value)) {

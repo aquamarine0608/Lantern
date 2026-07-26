@@ -130,4 +130,23 @@ test.describe("basics and happy path", () => {
     expect(t).toBeGreaterThan(1.2); // ~50% of a 3 s file
     expect(t).toBeLessThan(1.9);
   });
+
+  test("the waveform still renders on engines without canvas roundRect (Safari <16.4)", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 1.0 });
+    // the rest of the file deliberately supports Safari <16.4 (no lookbehind, 2lh
+    // px fallback) — roundRect is 16.4+, so the wave must not throw without it
+    await page.addInitScript(() => { delete CanvasRenderingContext2D.prototype.roundRect; });
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+    await page.goto("/#paste");
+    await startRead(page);
+    await waitForFileMode(page);
+    expect(errors.filter((e) => /roundRect/.test(e))).toEqual([]);
+    const painted = await page.evaluate(() => {
+      const c = document.getElementById("wave");
+      const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+      return d.some((x) => x !== 0);
+    });
+    expect(painted).toBe(true); // square bars, not a permanently blank scrubber
+  });
 });
