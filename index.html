@@ -1721,24 +1721,37 @@ bookFile.addEventListener("change", async () => {
   bookFile.value = "";
   if (!f) return;
   addBookBtn.disabled = true; addBookBtn.textContent = "Adding…";
+  /* libVoiceBtn stays live through the awaits below (only addBookBtn is disabled),
+     so a qwen hold banner can be raised — or already be standing — inside this
+     window. Capture the error identity and the view BEFORE the first await: the
+     clear must only ever drop the message this import superseded, and a failure
+     banner must not follow the user into another view (showView's contract). */
+  const bannerAtStart = errBannerSeq;
+  const viewAtStart = activeView;
   try {
     let parsed;
     try { parsed = parseEpub(await f.arrayBuffer()); }
     catch (err) {
       console.error(err);
-      showBanner(String(err && err.message).includes("DRM")
-        ? `<b>This EPUB is DRM-protected.</b> Lantern can only read DRM-free books.`
-        : `<b>Couldn't open that EPUB.</b> The file may be corrupted or in a format Lantern doesn't understand.`, { error: true });
+      if (activeView === viewAtStart)
+        showBanner(String(err && err.message).includes("DRM")
+          ? `<b>This EPUB is DRM-protected.</b> Lantern can only read DRM-free books.`
+          : `<b>Couldn't open that EPUB.</b> The file may be corrupted or in a format Lantern doesn't understand.`, { error: true });
       return;
     }
     const id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(36).slice(2));
     try { await dbPutBook({ id, addedAt: Date.now(), ...parsed }); }
     catch (err) {
       console.error(err);
-      showBanner(`<b>Couldn't save the book.</b> Device storage may be full — free some space and try again.`, { error: true });
+      if (activeView === viewAtStart)
+        showBanner(`<b>Couldn't save the book.</b> Device storage may be full — free some space and try again.`, { error: true });
       return;
     }
-    clearErrorBanner();
+    /* only the error THIS import superseded — never a newer one, and never an
+       unanswered qwen hold (the settings commits clear it when it IS answered) */
+    if (errBannerSeq === bannerAtStart &&
+        bannerText.innerHTML !== QWEN_HOLD && bannerText.innerHTML !== QWEN_HOLD_STALE &&
+        bannerText.innerHTML !== QWEN_HOLD_DRAFT) clearErrorBanner();
     await renderLibrary();
   } finally {
     addBookBtn.disabled = false; addBookBtn.textContent = "Add a book · EPUB";

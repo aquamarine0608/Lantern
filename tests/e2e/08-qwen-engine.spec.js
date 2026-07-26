@@ -990,6 +990,25 @@ test.describe("Qwen3-TTS server engine", () => {
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
   });
 
+  test("a successful book import never clears an unanswered hold banner", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "", k: "sk-tru", b: url }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn"); // raises the unfinished-edit hold
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    // the import's own post-await cleanup must only drop errors IT superseded
+    await importEpub(page);
+    await expect(page.locator(".book")).toHaveCount(1);
+    await expect(page.locator("#banner")).toBeVisible();
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+  });
+
   test("emptying the Server field never releases a key that was typed beside no address", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.addInitScript((url) => {
