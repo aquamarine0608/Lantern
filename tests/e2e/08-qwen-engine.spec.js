@@ -1678,4 +1678,73 @@ test.describe("Qwen3-TTS server engine", () => {
     await expect(page.locator(".sent.speaking")).toHaveCount(1);
     await expect(page.locator("#rPlay")).toHaveAttribute("aria-label", "Pause"); // it retried
   });
+
+  /* a MIXED pair: the voice was typed beside another concrete host, the key beside no
+     address at all (the "" wildcard). One shared boolean made a single foreign stamp
+     speak for both, so the cross-host wording claimed the key had been "typed for a
+     different server address" — false — and offered "put that other address back",
+     which releases only the voice and silently leaves the key held. */
+  test("a mixed-provenance pair gets the remedy that is true of BOTH fields", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url); // live, and the address the sheet shows
+      localStorage.setItem("lantern.qwenVoice", "cherry");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({
+        u: url,
+        v: "ethan",                    // held, stamped for another host
+        k: "sk-draft",                 // held, stamped for NO address
+        bv: "https://other.example",
+        bk: "",
+      }));
+    }, QWEN_URL);
+    await page.goto("/");
+
+    // opening the sheet reports whichever hold applies (reportQwenShadow)
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("voice and API key");
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    await expect(page.locator("#bannerText")).not.toContainText("different server address");
+    await expect(page.locator("#bannerText")).not.toContainText("put that other address back");
+
+    // committing the shown (live) address takes commitQwenUrl's own held branch —
+    // same rule there: one foreign stamp must not speak for the wildcard sibling
+    await page.fill("#qwenUrl", QWEN_URL);
+    await page.locator("#qwenUrl").blur();
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    await expect(page.locator("#bannerText")).not.toContainText("different server address");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenVoice"))).toBe("cherry");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-live");
+
+    // and the remedy it names actually releases BOTH — that is why it is the honest one
+    await page.fill("#qwenVoice", "ethan");
+    await page.locator("#qwenVoice").blur();
+    await page.fill("#qwenKey", "sk-draft");
+    await page.locator("#qwenKey").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenVoice"))).toBe("ethan");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenKey"))).toBe("sk-draft");
+    await expect(page.locator("#banner")).toBeHidden();
+  });
+
+  /* the same rule must not soften a pair that IS wholly cross-host: two foreign
+     stamps still get the cross-host wording and its address-revert remedy */
+  test("a pair stamped wholly for another host still gets the cross-host wording", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenVoice", "cherry");
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({
+        u: url, v: "ethan", k: "sk-draft",
+        bv: "https://other.example", bk: "https://other.example",
+      }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("voice and API key");
+    await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
+    await expect(page.locator("#bannerText")).toContainText("put that other address back");
+  });
 });

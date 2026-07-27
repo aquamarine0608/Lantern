@@ -626,4 +626,125 @@ test.describe("reading books aloud", () => {
     await page.click("#rPlay");
     await expect.poll(() => speakingSi(page), { timeout: 20_000 }).toBeGreaterThanOrEqual(0);
   });
+
+  /* the reader's own ctx.onstatechange had the same gap as the paste view's: it
+     settled the icon on an OS interruption but left the OS transport claiming
+     "playing" for a silent reader. The busy warm-up branch stays deliberately
+     untouched — setReaderMediaSession settles that once the engine is ready. */
+  test("an interrupted reader context pauses the lock-screen transport, with no user tap", async ({ page, mockTTS }) => {
+    await page.addInitScript(() => {
+      const OrigAC = window.AudioContext;
+      window.AudioContext = class extends OrigAC {
+        constructor(...a) { super(...a); window.__lastCtx = this; }
+      };
+    });
+    await openBookReady(page, mockTTS, { chunkSeconds: 1.5 });
+    await page.click("#rPlay");
+    await expect.poll(() => speakingSi(page), { timeout: 20_000 }).toBe(0); // warm-up over
+    const state = () => page.evaluate(() => navigator.mediaSession.playbackState);
+    await expect.poll(state, { timeout: 10_000 }).toBe("playing");
+
+    await page.evaluate(() => window.__lastCtx.suspend());
+    await expect.poll(state, { timeout: 5_000 }).toBe("paused");
+    await expect(page.locator("#rIconPlay")).toBeVisible();
+
+    await page.evaluate(() => window.__lastCtx.resume());
+    await expect.poll(state, { timeout: 5_000 }).toBe("playing");
+    await expect(page.locator("#rIconPause")).toBeVisible();
+  });
+
+  /* the forward chapter advance and the TOC jump both persist the new chapter
+     synchronously, before any playback. The BACKWARD skip did not — and readerPlayFrom
+     only writes later, via syncFromClock, once audio actually starts. Park it on a
+     stalled engine and the position never reached storage at all. */
+  test("skipping back into the previous chapter saves the position before any audio", async ({ page, mockTTS }) => {
+    await page.addInitScript(() => {
+      // a force-quit has no pagehide: once armed, no further progress write lands
+      const origPut = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (...args) {
+        if (window.__freezeProgress && this.name === "progress") return undefined;
+        return origPut.apply(this, args);
+      };
+    });
+    await mockTTS({ loadDelay: 30_000, chunkDelay: 50, chunkSeconds: 0.5 }); // the engine never arrives
+    await page.goto("/");
+    await importEpub(page);
+    await expect(page.locator(".book")).toHaveCount(1);
+
+    // park the reader at chapter 2, sentence 0 — the exact state where a Previous
+    // tap has to cross the chapter boundary
+    const id = await page.locator(".book").getAttribute("data-id");
+    await page.evaluate(async (bookId) => {
+      await new Promise((resolve, reject) => {
+        const open = indexedDB.open("lantern-books", 1);
+        open.onsuccess = () => {
+          const tx = open.result.transaction("progress", "readwrite");
+          tx.objectStore("progress").put({ bookId, ch: 1, si: 0, pct: 0.4, updatedAt: Date.now() });
+          tx.oncomplete = resolve;
+          tx.onerror = () => reject(tx.error);
+        };
+        open.onerror = () => reject(open.error);
+      });
+    }, id);
+
+    await page.click(".book");
+    await expect(page.locator("#rChapter")).toHaveText("Chapter Two");
+    await expect(page.locator("#rStatus")).toContainText("tap play to resume");
+
+    await page.click("#rPrev"); // crosses back into chapter 1 and parks on the warm-up
+    await expect(page.locator("#rChapter")).toHaveText("Chapter One");
+    await expect(page.locator("#rStatus")).toContainText("sentence 6 of 6");
+
+    // the row must already say chapter 1's last sentence — no audio will ever play
+    const row = async () =>
+      page.evaluate(
+        (bookId) =>
+          new Promise((resolve) => {
+            const open = indexedDB.open("lantern-books", 1);
+            open.onsuccess = () => {
+              const req = open.result.transaction("progress", "readonly").objectStore("progress").get(bookId);
+              req.onsuccess = () => resolve(req.result ? { ch: req.result.ch, si: req.result.si } : null);
+            };
+          }),
+        id
+      );
+    await expect.poll(row, { timeout: 5_000 }).toEqual({ ch: 0, si: 5 });
+
+    // and a force-quit resumes there, not at the chapter the user skipped out of
+    await page.evaluate(() => { window.__freezeProgress = true; });
+    await page.reload();
+    await expect(page.locator("#rChapter")).toHaveText("Chapter One");
+    await expect(page.locator("#rStatus")).toContainText("tap play to resume");
+    expect(await speakingSi(page)).toBe(5);
+  });
+
+  /* showView early-returns on activeView === name, so its "an error must not follow
+     the user into another view" clear never ran on a reader→reader hop — and
+     readerTeardown does not clear banners either. "This book isn't producing any
+     audio" then stood, position:fixed, over a book that had failed nothing. */
+  test("a reader failure banner does not follow you into the next book", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5, streamFailAfter: 0 });
+    await page.goto("/");
+    await importEpub(page, { title: "Book A" });
+    await expect(page.locator(".book")).toHaveCount(1);
+    await importEpub(page, { title: "Book B" });
+    await expect(page.locator(".book")).toHaveCount(2);
+    const cards = await page.evaluate(() =>
+      [...document.querySelectorAll(".book")].map((c) => ({ id: c.dataset.id, title: c.querySelector(".b-title").textContent }))
+    );
+    const bookB = cards.find((c) => c.title === "Book B");
+    const bookA = cards.find((c) => c.title === "Book A");
+
+    await page.click(`.book[data-id="${bookA.id}"] .book-open`);
+    await expect(page.locator("#rBook")).toHaveText("Book A");
+    await page.click("#rPlay");
+    await expect(page.locator("#bannerText")).toContainText("Tap play to try again", { timeout: 20_000 });
+    await expect(page.locator("#banner")).toBeVisible();
+
+    // a direct #read/ → #read/ hop, exactly what a multi-entry history traversal does
+    await page.evaluate((bid) => { location.hash = "#read/" + encodeURIComponent(bid); }, bookB.id);
+    await expect(page.locator("#rBook")).toHaveText("Book B");
+    await expect(page.locator("#banner")).toBeHidden();
+    await expect(page.locator("#rStatus")).toContainText("Chapter 1 of 3");
+  });
 });

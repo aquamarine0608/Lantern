@@ -1067,15 +1067,27 @@ function buildWav() {
 }
 
 /* ---------------- media session ---------------- */
+/* the paste view keeps the textarea and the voice controls live and editable through
+   a whole reading (setVoice/commitQwenVoice both no-op on the live session —
+   readerSettingsChanged returns early with no book open), so the transport must
+   describe the audio that was actually generated, not what the controls say now.
+   Same freeze as sentenceAudioStream's sessVoice/sessCfg, and the same frozen text
+   #nowReading already shows. */
+let qrMeta = null;
+function quickReadMeta(text) {
+  const voiceOpt = voiceSel.selectedOptions[0];
+  return {
+    title: (excerpt(text === undefined ? textEl.value : text, 7) || "Lantern") + "…",
+    artist: engine === "qwen"
+      ? "Qwen3-TTS · " + (qwenVoiceName || "cherry")
+      : (voiceOpt ? voiceOpt.textContent.split("·")[0].trim() : "Kokoro"),
+  };
+}
 function setMediaSession(playing) {
   if (!("mediaSession" in navigator)) return;
-  const title = (excerpt(textEl.value, 7) || "Lantern") + "…";
-  const voiceOpt = voiceSel.selectedOptions[0];
-  const artist = engine === "qwen"
-    ? "Qwen3-TTS · " + (qwenVoiceName || "cherry")
-    : (voiceOpt ? voiceOpt.textContent.split("·")[0].trim() : "Kokoro");
+  const m = qrMeta || quickReadMeta(); /* fallback keeps behaviour if a path ever publishes without a snapshot */
   navigator.mediaSession.metadata = new MediaMetadata({
-    title, artist,
+    title: m.title, artist: m.artist,
     album: "Lantern",
     artwork: [{ src: "icon-512.png", sizes: "512x512", type: "image/png" }],
   });
@@ -1256,6 +1268,10 @@ readBtn.addEventListener("click", async () => {
   readBtn.classList.add("stopping", "working");
   player.hidden = false;
   nowReading.textContent = excerpt(text, 10) + "…";
+  /* the lock screen describes THIS reading: freeze it beside #nowReading, from the
+     same captured `text`, or a later textarea edit / voice or engine change would
+     relabel audio it never made */
+  qrMeta = quickReadMeta(text);
   statusLine.textContent = "Warming up…";
   playerHint.hidden = false;
   setPlayIcon(true);
@@ -1268,10 +1284,15 @@ readBtn.addEventListener("click", async () => {
   const liveCtx = ctx;
   liveCtx.onstatechange = () => { /* calls, Siri, alarms interrupt the context on iOS — keep the icon honest */
     if (ctx !== liveCtx || (mode !== "generating" && mode !== "done-live")) return;
-    setPlayIcon(liveCtx.state === "running");
+    const running = liveCtx.state === "running";
+    setPlayIcon(running);
+    /* the OS transport must follow too — an interruption reaches the context only
+       through this handler, and a stale "playing" leaves the lock screen showing a
+       live Pause control for a silent app */
+    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = running ? "playing" : "paused";
     /* the terminal done-live line must follow too — suspend()/resume() settle async,
        and OS interruptions reach the context only through this handler */
-    if (mode === "done-live") statusLine.textContent = doneLiveStatus(liveCtx.state === "running");
+    if (mode === "done-live") statusLine.textContent = doneLiveStatus(running);
   };
   try { await ctx.resume(); } catch {} /* a concurrent teardown closes the context — a rejected resume is not an error */
   /* activating the audio session is a REAL await on iOS and when the browser routes
@@ -1409,6 +1430,7 @@ function stopQuickRead() {
   readBtn.textContent = "Read aloud";
   readBtn.classList.remove("stopping", "working");
   releaseMediaSession(); /* the session is gone, not parked */
+  qrMeta = null; /* a torn-down session leaves no metadata behind */
 }
 
 /* a live paste session picked its engine ONCE: sentenceAudioStream branches on the
@@ -1492,14 +1514,22 @@ function joinPath(dir, href) {
    it steps over, so "It cost 3.14 dollars." would lose "It cost 3." — decimals,
    initials (Ph.D.), URLs and missing-space-after-period artifacts are everywhere
    in real books. */
-const SENT_END_RE = /(?:[.!?…]+[\])"'”’»]*(?=\s|$)|[。！？]+[」』）》〉】”’]*)/g;
+/* “ and ‘ (U+201C/U+2018) are the CLOSING marks in German/Czech/Slovak („…“ and ‚…‘) —
+   they must close a Latin sentence. Latin branch only: Simplified Chinese OPENS with “,
+   so the CJK branch must not consume it. */
+const SENT_END_RE = /(?:[.!?…]+[\])"'”’»“‘]*(?=\s|$)|[。！？]+[」』）》〉】”’]*)/g;
 /* a lone "." after a known abbreviation or an initial is not a sentence end. Anchored
    at the pending segment's tail; the leading boundary keeps "up."/"it."/"Amr." real.
+   A closed-up dash is a word boundary too — "person—Mr. Harding" is standard American
+   prose typography, and without the dash in the class "Mr." there reads as a sentence
+   end and cuts the audio mid-name. Escapes, not literals (as NO_SPACE_AFTER below), so
+   a homoglyph paste cannot silently widen the class. Hyphen-minus is deliberately out:
+   "word-Mr." is not real typography.
    Second branch = a letter preceded by a dot, i.e. the LAST dot of a dotted form
    (U.S. / D.C. / a.m. / p.m. / e.g. / i.e. / Ph.D.), which the branch above cannot
    see. Case-sensitive on purpose: /i would swallow the sentence-final "no." and "co.".
    No lookbehind — Safari <16.4 would SyntaxError on the whole script. */
-const ABBREV_END_RE = /(?:(?:^|[\s("'\[“‘])(?:[A-Za-z]|Mr|Mrs|Ms|Mx|Dr|Prof|Rev|Fr|Hon|Sr|Jr|St|Ste|Mt|Messrs|Capt|Col|Gen|Lt|Sgt|Maj|Adm|Sen|Gov|Pres|Supt|vs|etc|al|cf|ca|approx|No|Nos|Vol|Vols|Fig|Figs|Ch|Chap|Ed|Eds|Inc|Ltd|Co|pp|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec|Mon|Tues?|Wed|Thurs?|Fri|Sat|Sun)|\.[A-Za-z])\.$/;
+const ABBREV_END_RE = /(?:(?:^|[\s("'\[“‘\u2013\u2014\u2015])(?:[A-Za-z]|Mr|Mrs|Ms|Mx|Dr|Prof|Rev|Fr|Hon|Sr|Jr|St|Ste|Mt|Messrs|Capt|Col|Gen|Lt|Sgt|Maj|Adm|Sen|Gov|Pres|Supt|vs|etc|al|cf|ca|approx|No|Nos|Vol|Vols|Fig|Figs|Ch|Chap|Ed|Eds|Inc|Ltd|Co|pp|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec|Mon|Tues?|Wed|Thurs?|Fri|Sat|Sun)|\.[A-Za-z])\.$/;
 /* sentence ends in a CJK codepoint (incl. fullwidth forms) — no space follows it in print.
    Escapes, not literals: U+F900 豈 is visually identical to U+8C48 豈, and typing the wrong
    one once silently widened the class to cover Hangul, surrogates and the whole PUA.
@@ -1552,9 +1582,17 @@ const splitSentences = text => {
   return out.flatMap(s => splitLong(s.trim())).filter(Boolean);
 };
 
+/* unzipSync inflates EVERY member into RAM up front (no laziness, fflate 0.8.3).
+   parseEpub only reads container.xml, the OPF, the nav/NCX and the spine's XHTML —
+   plus at most one cover, fetched by a second pass below once its path is known.
+   Denylist, not allowlist: an unrecognised extension is still inflated, so an oddly
+   named content document can never go missing. */
+const EPUB_ASSET_RE = /\.(png|jpe?g|gif|webp|svg|bmp|tiff?|ico|avif|ttf|otf|ttc|otc|woff2?|eot|mp3|m4a|m4b|aac|oga|ogg|opus|wav|flac|mp4|m4v|webm|mov|avi|css|js|mjs)$/i;
 function parseEpub(arrayBuf) {
+  const bytes = new Uint8Array(arrayBuf);
   let zip;
-  try { zip = unzipSync(new Uint8Array(arrayBuf)); } catch { throw new Error("not a zip archive"); }
+  try { zip = unzipSync(bytes, { filter: f => !EPUB_ASSET_RE.test(f.name) }); }
+  catch { throw new Error("not a zip archive"); }
   const textOf = p => { const f = zip[p]; if (!f) throw new Error("missing " + p); return strFromU8(f); };
   const parse = (s, type) => {
     const doc = new DOMParser().parseFromString(s, type || "application/xml");
@@ -1602,7 +1640,11 @@ function parseEpub(arrayBuf) {
     if (metaCover) coverItem = manifest.get(metaCover.getAttribute("content"));
   }
   if (coverItem && /^image\//.test(coverItem.type || "")) { /* EPUB2 meta covers sometimes point at an XHTML page */
-    const data = zip[joinPath(opfDir, coverItem.href)];
+    const coverPath = joinPath(opfDir, coverItem.href);
+    /* the cover was filtered out above; re-scan the central directory for just it.
+       Same name comparison as before, so encoded-href behaviour is unchanged. */
+    let data = zip[coverPath];
+    if (!data) { try { data = unzipSync(bytes, { filter: f => f.name === coverPath })[coverPath]; } catch {} }
     if (data) cover = new Blob([data], { type: coverItem.type });
   }
 
@@ -1778,7 +1820,20 @@ async function renderLibrary() {
       }
       clearTimeout(delTimer);
       const title = b.title, slot = [...shelf.children].indexOf(card);
-      await dbDeleteBook(b.id);
+      const viewAtStart = activeView;
+      try { await dbDeleteBook(b.id); }
+      catch (err) {
+        console.error(err);
+        /* the 3s revert timer was cleared above, so nothing else will ever put this
+           button back — it would sit on "Really remove?" forever */
+        del.classList.remove("confirm"); del.textContent = "Remove";
+        /* a failure banner must not follow the user into another view (showView's
+           contract) — the await can outlive the library view. App-authored text only:
+           showBanner assigns via innerHTML and the title comes from an untrusted EPUB. */
+        if (activeView === viewAtStart)
+          showBanner(`<b>Couldn't remove that book.</b> Lantern's storage didn't accept the change — try again, or reload the app.`, { error: true });
+        return;
+      }
       await renderLibrary();
       /* renderLibrary's shelf.innerHTML = "" unrenders the very button this click came
          from, so focus would drop to <body> — the same hazard closeSheets, markTocCurrent,
@@ -2037,7 +2092,12 @@ async function ensureReaderAudio() {
          right after readerPlayFrom set the busy pulse and would wipe it for the
          whole engine warm-up. rd.playing is still tracked above, and the icon is
          settled from it once the engine is ready. */
-      if (!rPlay.classList.contains("working")) setReaderIcon(running ? "pause" : "play");
+      if (!rPlay.classList.contains("working")) {
+        setReaderIcon(running ? "pause" : "play");
+        /* and the OS transport with it — otherwise the lock screen keeps a live
+           Pause control and a "playing" session for a silent, interrupted reader */
+        if ("mediaSession" in navigator) navigator.mediaSession.playbackState = running ? "playing" : "paused";
+      }
     };
   }
   try { await rd.ctx.resume(); } catch {}
@@ -2351,7 +2411,15 @@ function readerSkip(d) {
   if (t < 0) {
     if (rd.ch > 0) {
       rd.ch--; renderChapter();
-      readerPlayFrom(Math.max(0, rd.sentences.length - 1));
+      /* commit the new chapter BEFORE readerPlayFrom's engine warm-up, like the
+         forward advance (readerChapterDone) and the TOC jump: a park on a failed
+         or slow engine leaves no timings, so syncFromClock never gets to write
+         this position and a force-quit would resume at the OLD chapter.
+         rd.si must be set first — it is still 0 from the outgoing chapter, so a
+         bare save would persist si 0 and understate readerProgressPct. */
+      rd.si = Math.max(0, rd.sentences.length - 1);
+      saveReaderProgress();
+      readerPlayFrom(rd.si);
     } else if (!rd.started) readerPlayFrom(0); /* parked before sentence 1: no move to make, but still answer the tap */
     return;
   }
@@ -2741,7 +2809,7 @@ function commitQwenUrl() {
      contract promises — it must never promote the draft key/voice the boot block
      refused over a working one (password field: the mistake would be invisible).
      And re-typing the LIVE address never adopts siblings stamped for ANOTHER host. */
-  let heldV = false, heldK = false, heldStale = false;
+  let heldV = false, heldK = false, staleV = false, staleK = false;
   if (urlChanged || (qwenUrlTouched && sibsMayRide(v))) {
     const dv = qwenVoice.value.trim() || "cherry", dk = qwenKey.value.trim();
     /* per-field engagement holds HERE too: committing an address is engagement with
@@ -2757,11 +2825,11 @@ function commitQwenUrl() {
     const rideK = qwenKeyTouched || (!!qwenKeyBase && qwenKeyBase === v);
     if (dv !== qwenVoiceName) {
       if (rideV) { qwenVoiceName = dv; changed = true; try { localStorage.setItem("lantern.qwenVoice", dv); } catch {} }
-      else { heldV = true; if (qwenVoiceBase && qwenVoiceBase !== v) heldStale = true; }
+      else { heldV = true; staleV = !!qwenVoiceBase && qwenVoiceBase !== v; }
     }
     if (dk !== qwenApiKey) {
       if (rideK) { qwenApiKey = dk; qwenKey.value = dk; changed = true; try { localStorage.setItem("lantern.qwenKey", dk); } catch {} }
-      else { heldK = true; if (qwenKeyBase && qwenKeyBase !== v) heldStale = true; }
+      else { heldK = true; staleK = !!qwenKeyBase && qwenKeyBase !== v; }
     }
     /* re-pair PER FIELD: a sibling that rode (or already matches the live value)
        now genuinely travels with v; a held one keeps its own provenance, which
@@ -2779,10 +2847,10 @@ function commitQwenUrl() {
        blur contract promises. */
     const eng = t => qwenUrlTouched || t;
     if (eng(qwenVoiceTouched) && (qwenVoice.value.trim() || "cherry") !== qwenVoiceName) {
-      heldV = true; if (qwenVoiceBase && qwenVoiceBase !== v) heldStale = true;
+      heldV = true; staleV = !!qwenVoiceBase && qwenVoiceBase !== v;
     }
     if (eng(qwenKeyTouched) && qwenKey.value.trim() !== qwenApiKey) {
-      heldK = true; if (qwenKeyBase && qwenKeyBase !== v) heldStale = true;
+      heldK = true; staleK = !!qwenKeyBase && qwenKeyBase !== v;
     }
   }
   if (changed) {
@@ -2795,7 +2863,12 @@ function commitQwenUrl() {
      beside another address, so "put that other address back" is real. One held on
      the "" wildcard was typed with NO address shown — there is no other address to
      restore; name the draft remedy instead, exactly as reportQwenShadow does. */
-  if (heldV || heldK) refuseSibling(true, (heldStale ? QWEN_HOLD_STALE : QWEN_HOLD_DRAFT)(HOLD_SUBJ(heldV, heldK)));
+  /* the cross-host remedy names ONE other address to restore — it is only honest when
+     every held field was typed beside it. A mixed pair (one foreign stamp, one ""
+     wildcard) gets the draft remedy, which is true of both and releases both: this
+     commit has settled the address, so a retype re-stamps each field to the live one. */
+  const allStale = (!heldV || staleV) && (!heldK || staleK);
+  if (heldV || heldK) refuseSibling(true, (allStale ? QWEN_HOLD_STALE : QWEN_HOLD_DRAFT)(HOLD_SUBJ(heldV, heldK)));
   flushQwenFields(); /* clears the draft once nothing is uncommitted */
   /* the no-change + nothing-held path reaches neither clearErrorBanner above nor a
      re-report — and it is exactly how a user answers a hold by putting the live
@@ -2943,7 +3016,12 @@ function reportQwenShadow() {
      nothing — and commitQwenUrl's own refusal would overwrite it with QWEN_HOLD_STALE
      one tap later. Restoring that other address settles the address AND releases the
      values in one commit, so the cross-host remedy wins here. */
-  const foreign = stamps.some(b => b && b !== shown);
+  /* EVERY, not some: with a mixed pair the cross-host wording is false for the
+     wildcard-stamped sibling and "put that other address back" does not release it.
+     `stamps` is non-empty (the !vHeld && !kHeld bail above), so this cannot be
+     vacuously true. Feeding serverBlocks below with it is deliberate: a mixed pair
+     whose shown address is blocked really does need the address settled first. */
+  const foreign = stamps.every(b => b && b !== shown);
   const serverBlocks = shown !== qwenServer && (!shown || !qwenUrlTouched) && !foreign;
   const why = serverBlocks ? QWEN_HOLD
     : shown && shown !== qwenServer && stamps.every(b => b === shown) ? QWEN_HOLD
@@ -3144,7 +3222,16 @@ async function openReader(id) {
     return;
   }
   stopQuickRead();
-  if (rd.book && rd.book.id !== id) readerTeardown();
+  if (rd.book && rd.book.id !== id) {
+    readerTeardown();
+    /* same view NAME, different book: showView early-returns on activeView === name,
+       so its own clear (the "an error must not follow the user" rule) never runs on a
+       reader→reader hop — e.g. a multi-entry history traversal between two #read/
+       entries. "This book isn't producing any audio" / "Tap play to try again" would
+       otherwise stand, position:fixed over a book that has failed nothing. Same qwen-hold
+       exemption as showView: a hold reports on no attempt and no book. */
+    if (!bannerIsQwenHold()) clearErrorBanner();
+  }
   showView("reader");
   /* the reader drives a MediaStream, which iOS mutes under the ring/silent switch.
      Show this the moment the book opens, never from readerPlayFrom: the hint is a
@@ -3201,11 +3288,32 @@ function showView(name) {
      whole passage synthesised with the shadowed voice/key. */
   if (activeView && !bannerIsQwenHold()) clearErrorBanner();
   activeView = name;
+  /* the outgoing view — and any sheet closed with it — is about to become
+     display:none, so whatever the user had focused unrenders and focus drops to
+     <body>, restarting the next Tab at the top of the document. Same hazard
+     hidePlayer, closeSheets, the Remove handler, the import restore and the
+     ghost-card restore all guard, on the most-travelled path in the app. Test
+     containment BEFORE the toggle, exactly as hidePlayer does: the hide and the
+     restore are one synchronous run, so Chromium has not moved focus to <body>
+     yet and nothing can claim it in between. A cold boot (activeView "", focus on
+     <body>) fails the test, so this never steals focus. preventScroll because
+     focus() scrolls its target into view. */
+  const ae = document.activeElement;
+  const hadFocus = !!ae && [viewLibrary, viewPaste, viewReader, tocSheet, setSheet].some(v => v.contains(ae));
   closeSheets({ restoreFocus: false }); /* sheets are shared between views — never leave one floating across a switch, and the opener is leaving the screen */
   viewLibrary.classList.toggle("active", name === "library");
   viewPaste.classList.toggle("active", name === "paste");
   viewReader.classList.toggle("active", name === "reader");
   document.body.classList.toggle("reading", name === "reader");
+  if (hadFocus) {
+    /* the first control of the destination view, so the Tab order continues where
+       the user now is. addBookBtn is disabled for the length of an import — fall
+       back to the next library control rather than focusing nothing. */
+    const land = name === "reader" ? backBtn
+               : name === "paste"  ? pasteBackBtn
+               : (addBookBtn.disabled ? pasteModeBtn : addBookBtn);
+    if (land && land.isConnected && land.offsetParent !== null) land.focus({ preventScroll: true });
+  }
   /* reveal AFTER the destination layout is final — renderLibrary builds the shelf
      only once its two IDB reads resolve, so a synchronous call here would measure
      the old, short layout (it catches its own failure, so .finally always runs) */

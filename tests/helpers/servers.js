@@ -29,20 +29,32 @@ const MIME = {
   ".wasm": "application/wasm",
 };
 
-function handleControl(state, key, req, res) {
+/* `errKey`, when given, adds a second knob: ?error=1|0 makes the server answer
+   REACHABLE but broken (a 5xx), as opposed to ?offline=1's destroyed socket — the
+   two are different failures and the service worker must handle both. */
+function handleControl(state, key, req, res, errKey) {
   const url = new URL(req.url, "http://x");
   if (url.pathname !== "/__control") return false;
   if (url.searchParams.has("offline")) state[key] = url.searchParams.get("offline") === "1";
+  if (errKey && url.searchParams.has("error")) state[errKey] = url.searchParams.get("error") === "1";
   res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify({ [key]: state[key] }));
+  res.end(JSON.stringify(errKey ? { [key]: state[key], [errKey]: !!state[errKey] } : { [key]: state[key] }));
   return true;
 }
 
 function startAppServer(state) {
   const server = http.createServer((req, res) => {
-    if (handleControl(state, "appOffline", req, res)) return;
+    if (handleControl(state, "appOffline", req, res, "appError")) return;
     if (state.appOffline) {
       req.socket.destroy();
+      return;
+    }
+    /* a redeploy / edge blip: the origin answers top-level navigations with a 503
+       error page instead of the app. Only navigations — subresources keep working,
+       which is exactly what makes the error document look "successful" to fetch(). */
+    if (state.appError && req.headers["sec-fetch-mode"] === "navigate") {
+      res.writeHead(503, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end("<!doctype html><title>503</title><h1>origin temporarily unavailable</h1>");
       return;
     }
     const reqUrl = new URL(req.url, "http://x");

@@ -14,6 +14,67 @@ test.describe("accessibility and input", () => {
     await expect(page.locator(".book .b-del")).toHaveText("Remove");
   });
 
+  /* showView() toggles .active, and `.view { display:none }` unrenders the whole
+     outgoing subtree — including whatever the user had focused. Every other place
+     that hides a focused control (hidePlayer, closeSheets, the Remove handler, the
+     import restore, the ghost-card restore) re-anchors focus; the most-travelled
+     path in the app did not, so every keyboard/AT view switch dropped focus to
+     <body> and restarted the next Tab at the top of the document. */
+  test("every view switch re-anchors focus — the four-hop tour never lands on <body>", async ({ page }) => {
+    const active = () =>
+      page.evaluate(() => {
+        const el = document.activeElement;
+        if (!el || el === document.body) return "BODY";
+        return el.id || el.className || el.tagName;
+      });
+
+    await page.goto("/");
+    await importEpub(page);
+    await expect(page.locator(".book")).toHaveCount(1);
+
+    // library → paste
+    await page.locator("#pasteModeBtn").focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#viewPaste")).toBeVisible();
+    await expect.poll(active, { timeout: 5_000 }).toBe("pasteBackBtn");
+
+    // paste → library (Enter on the control focus just landed on)
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#viewLibrary")).toBeVisible();
+    await expect.poll(active, { timeout: 5_000 }).toBe("addBookBtn");
+
+    // library → reader, opening a book that really exists (the ghost-card branch
+    // was the only one openReader ever restored focus from)
+    await page.locator(".book-open").focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await expect.poll(active, { timeout: 5_000 }).toBe("backBtn");
+
+    // reader → library
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#viewLibrary")).toBeVisible();
+    await expect.poll(active, { timeout: 5_000 }).toBe("addBookBtn");
+
+    // and the Tab order continues from where the user now is, not the document top
+    await page.keyboard.press("Tab");
+    expect(await active()).not.toBe("BODY");
+  });
+
+  /* a switch made with a sheet open (a browser back gesture, a hardware Escape)
+     closes the sheet AND unrenders the view under it — the containment test has to
+     see the sheet as "inside the app" or the re-anchor never fires */
+  test("a view switch with a sheet open still re-anchors focus", async ({ page }) => {
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#setSheet")).toBeVisible();
+    expect(await page.evaluate(() => document.activeElement.id)).toBe("setSheet");
+    await page.evaluate(() => { location.hash = "#paste"; });
+    await expect(page.locator("#setSheet")).toBeHidden();
+    await expect
+      .poll(() => page.evaluate(() => (document.activeElement === document.body ? "BODY" : document.activeElement.id)), { timeout: 5_000 })
+      .toBe("pasteBackBtn");
+  });
+
   test("pinch-zoom is not disabled", async ({ page }) => {
     await page.goto("/");
     const content = await page.locator('meta[name="viewport"]').getAttribute("content");

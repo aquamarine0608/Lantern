@@ -2,7 +2,7 @@
    The ~90 MB Kokoro model is cached separately by transformers.js (browser Cache API),
    so after one successful run the whole app works in airplane mode. */
 
-const VERSION = "v5";
+const VERSION = "v6";
 const SHELL = `lantern-shell-${VERSION}`;
 const CDN = `lantern-cdn-${VERSION}`;
 const SHELL_FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-180.png", "./icon-512.png"];
@@ -82,10 +82,20 @@ self.addEventListener("fetch", (e) => {
       (url.pathname === rootPath || url.pathname === rootPath + "index.html");
     e.respondWith(
       fetch(e.request)
-        .then((res) => {
+        .then(async (res) => {
           if (res.ok && isShellDoc) {
             const forRoot = res.clone(), forIndex = res.clone();
             caches.open(SHELL).then((c) => { c.put("./", forRoot); c.put("./index.html", forIndex); });
+            return res;
+          }
+          /* Reachable but broken origin (502/503/504 during a redeploy or an edge
+             blip) is just as unusable as being offline, and we hold a known-good
+             shell — serve it instead of the error page. Gate on status >= 500:
+             a 404 must stay a 404, and a navigation redirect surfaces here as an
+             opaqueredirect (status 0) that the browser must be allowed to follow. */
+          if (isShellDoc && res.status >= 500) {
+            const hit = (await caches.match(e.request, { ignoreSearch: true })) || (await caches.match("./"));
+            if (hit) return hit;
           }
           return res;
         })

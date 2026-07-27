@@ -2,12 +2,12 @@ const http = require("http");
 const https = require("https");
 const { APP_PORT, CDN_PORT, QWEN_PORT } = require("./servers");
 
-function controlRequest(useTls, port, hostHeader, offline) {
+function controlRequest(useTls, port, hostHeader, query) {
   const mod = useTls ? https : http;
   const opts = {
     host: "127.0.0.1",
     port,
-    path: `/__control?offline=${offline ? 1 : 0}`,
+    path: `/__control?${query}`,
     headers: { host: hostHeader },
     rejectUnauthorized: false,
   };
@@ -20,9 +20,11 @@ function controlRequest(useTls, port, hostHeader, offline) {
   });
 }
 
-const setAppOffline = (offline) => controlRequest(false, APP_PORT, "127.0.0.1", offline);
-const setCdnOffline = (offline) => controlRequest(true, CDN_PORT, "cdn.jsdelivr.net", offline);
-const setQwenOffline = (offline) => controlRequest(false, QWEN_PORT, "127.0.0.1", offline);
+const setAppOffline = (offline) => controlRequest(false, APP_PORT, "127.0.0.1", `offline=${offline ? 1 : 0}`);
+const setCdnOffline = (offline) => controlRequest(true, CDN_PORT, "cdn.jsdelivr.net", `offline=${offline ? 1 : 0}`);
+const setQwenOffline = (offline) => controlRequest(false, QWEN_PORT, "127.0.0.1", `offline=${offline ? 1 : 0}`);
+/* reachable-but-broken origin: navigations get a 503 error PAGE, not a dead socket */
+const setAppError = (error) => controlRequest(false, APP_PORT, "127.0.0.1", `error=${error ? 1 : 0}`);
 
 function qwenControl(query) {
   return new Promise((resolve, reject) => {
@@ -47,4 +49,4 @@ function getQwenRequests() {
   });
 }
 
-module.exports = { setAppOffline, setCdnOffline, setQwenOffline, setQwenHang, setQwenFail, setQwenRate, setQwenDelay, getQwenRequests };
+module.exports = { setAppOffline, setAppError, setCdnOffline, setQwenOffline, setQwenHang, setQwenFail, setQwenRate, setQwenDelay, getQwenRequests };

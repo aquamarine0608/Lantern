@@ -249,6 +249,32 @@ test.describe("stopping and error paths", () => {
     await waitForFileMode(page);
   });
 
+  /* an iOS interruption (a call, Siri, an alarm) reaches the app ONLY through
+     ctx.onstatechange. That handler kept the in-app icon honest but never touched
+     navigator.mediaSession.playbackState, so the lock screen was left showing a live
+     Pause control and a "playing" session for an app that had gone silent. */
+  test("an interrupted audio context pauses the lock-screen transport, with no user tap", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 200, chunkSeconds: 1.5 });
+    await page.addInitScript(() => {
+      const OrigAC = window.AudioContext;
+      window.AudioContext = class extends OrigAC {
+        constructor(...a) { super(...a); window.__lastCtx = this; }
+      };
+    });
+    await page.goto("/#paste");
+    await startRead(page, LONG_TEXT);
+    const state = () => page.evaluate(() => navigator.mediaSession.playbackState);
+    await expect.poll(state, { timeout: 15_000 }).toBe("playing");
+
+    await page.evaluate(() => window.__lastCtx.suspend()); // the OS takes the audio away
+    await expect.poll(state, { timeout: 5_000 }).toBe("paused");
+    await expect(page.locator("#iconPlay")).toBeVisible();
+
+    await page.evaluate(() => window.__lastCtx.resume()); // …and hands it back
+    await expect.poll(state, { timeout: 5_000 }).toBe("playing");
+    await expect(page.locator("#iconPause")).toBeVisible();
+  });
+
   test("finishing generation while paused says 'paused', not 'still playing'", async ({ page, mockTTS }) => {
     // synthesis deliberately continues through a pause — the terminal done-live
     // status must reflect the transport's real state, not assert "still playing"

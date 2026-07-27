@@ -149,4 +149,50 @@ test.describe("basics and happy path", () => {
     });
     expect(painted).toBe(true); // square bars, not a permanently blank scrubber
   });
+
+  /* setMediaSession re-derived title from the LIVE textarea and artist from the LIVE
+     voice picker on every republish (every play/pause, every lock-screen command, the
+     live→file hand-off) — but the paste view keeps both editable through a whole
+     reading, and the synthesis pipeline froze its own copies at read-start for exactly
+     that reason. The lock screen ended up naming text and a voice the audio was never
+     made from. */
+  test("the lock screen keeps naming the reading that is actually playing", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 200, chunkSeconds: 1.2 });
+    const meta = () =>
+      page.evaluate(() => ({
+        title: navigator.mediaSession.metadata ? navigator.mediaSession.metadata.title : "",
+        artist: navigator.mediaSession.metadata ? navigator.mediaSession.metadata.artist : "",
+      }));
+
+    await page.goto("/#paste");
+    await startRead(page, "Alpha opening line here. Beta second line here. Gamma third line here.");
+    await expect.poll(async () => (await meta()).title, { timeout: 15_000 }).toContain("Alpha");
+    const frozen = await meta();
+    expect(frozen.artist).toBe("Heart"); // the default af_heart option
+
+    // the user moves on mid-reading — the audio already generated cannot change
+    await page.fill("#text", "Zulu entirely different words now.");
+    await page.selectOption("#voice", "bm_george");
+
+    await page.click("#playBtn"); // pause republishes the metadata
+    await expect(page.locator("#iconPlay")).toBeVisible();
+    expect(await meta()).toEqual(frozen);
+    await page.click("#playBtn"); // and so does resume
+    await expect(page.locator("#iconPause")).toBeVisible();
+    expect(await meta()).toEqual(frozen);
+
+    // the live→file hand-off publishes once more, on its own, with no user action
+    await waitForFileMode(page, 30_000);
+    const afterHandoff = await meta();
+    expect(afterHandoff).toEqual(frozen);
+    expect(afterHandoff.title).not.toContain("Zulu");
+    expect(afterHandoff.artist).not.toBe("George");
+
+    // a NEW reading names the new text and the new voice
+    await page.click("#pasteBackBtn"); // leaving the view tears the session down
+    await page.click("#pasteModeBtn");
+    await startRead(page, "Zulu entirely different words now.");
+    await expect.poll(async () => (await meta()).title, { timeout: 15_000 }).toContain("Zulu");
+    expect((await meta()).artist).toBe("George");
+  });
 });

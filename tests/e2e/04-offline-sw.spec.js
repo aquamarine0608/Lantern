@@ -1,5 +1,5 @@
 const { test, expect, startRead, waitForFileMode } = require("../helpers/fixtures");
-const { setAppOffline, setCdnOffline } = require("../helpers/net");
+const { setAppOffline, setAppError, setCdnOffline } = require("../helpers/net");
 
 /* True offline testing: the local app server and the mock CDN server destroy
    every socket while "offline", which also applies to fetches issued by the
@@ -23,6 +23,7 @@ async function warmUp(page, path = "/#paste") {
 test.describe("service worker and offline", () => {
   test.afterEach(async () => {
     await setAppOffline(false);
+    await setAppError(false);
     await setCdnOffline(false);
   });
 
@@ -121,6 +122,32 @@ test.describe("service worker and offline", () => {
       }
       return false;
     }, WASM, { timeout: 15_000 });
+  });
+
+  /* network-first fell back to the cached shell only when fetch() REJECTED. A
+     reachable origin answering 502/503/504 (a redeploy, an edge blip) resolves
+     successfully, so the error page was handed to the browser as the top-level
+     document even though a known-good shell sat one caches.match away. */
+  test("a 503 from a reachable origin still renders the cached shell", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await warmUp(page);
+
+    await setAppError(true); // reachable, but every navigation is a 503 error page
+    await page.goto("/");
+    await expect(page.locator("#addBookBtn")).toBeVisible(); // the shell, not "origin temporarily unavailable"
+    await expect(page.locator("h1")).toHaveCount(0);
+
+    // …and the fallback is not over-broad: a non-shell path is not the app, so its
+    // error must reach the browser rather than be papered over with the shell
+    const other = await page.goto("/nope.html");
+    expect(other.status()).toBe(503);
+    await expect(page.locator("#addBookBtn")).toHaveCount(0);
+
+    // with the origin healthy again, a genuine 404 stays a 404 — only >= 500 falls back
+    await setAppError(false);
+    const missing = await page.goto("/nope.html");
+    expect(missing.status()).toBe(404);
+    await expect(page.locator("#addBookBtn")).toHaveCount(0);
   });
 
   test("the Google Fonts stylesheet is cached for offline use", async ({ page }) => {

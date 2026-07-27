@@ -221,6 +221,46 @@ test.describe("library", () => {
     await expect(page.locator("#banner")).toBeHidden();
   });
 
+  /* every other IDB call site handles rejection; the Remove-confirm handler was the
+     one exception. A rejected delete threw out of the async listener, so nothing after
+     it ran: no re-render, no focus restore, no announce, no banner — and the button
+     was left reading "Really remove?" forever, its 3 s revert timer already cleared. */
+  test("a storage failure during Remove reverts the button and says so", async ({ page }) => {
+    // deterministic seam: IDBObjectStore.delete is used by dbDeleteBook and nothing
+    // else, and idb() runs it inside the promise executor, so a throw rejects
+    await page.addInitScript(() => {
+      const origDelete = IDBObjectStore.prototype.delete;
+      IDBObjectStore.prototype.delete = function (...args) {
+        if (window.__failDelete) throw new DOMException("simulated delete failure", "InvalidStateError");
+        return origDelete.apply(this, args);
+      };
+    });
+    await page.goto("/");
+    await importEpub(page, { title: "Stuck Book" });
+    await expect(page.locator(".book")).toHaveCount(1);
+
+    await page.evaluate(() => { window.__failDelete = true; });
+    await page.click(".book .b-del"); // arm
+    await expect(page.locator(".book .b-del")).toHaveText("Really remove?");
+    await page.click(".book .b-del"); // confirm — the delete rejects
+
+    await expect(page.locator("#bannerText")).toContainText("Couldn't remove that book.");
+    await expect(page.locator("#banner")).toBeVisible();
+    await expect(page.locator(".book .b-del")).toHaveText("Remove"); // never stranded on "Really remove?"
+    await expect(page.locator(".book")).toHaveCount(1); // still on the shelf
+    await expect(page.locator(".book .b-title")).toHaveText("Stuck Book");
+    // the failure reaches assistive tech too
+    await expect
+      .poll(() => page.evaluate(() => document.getElementById("a11yAlert").textContent), { timeout: 5_000 })
+      .toContain("Couldn't remove that book");
+
+    // and the reverted button is armable again: with storage healthy, Remove works
+    await page.evaluate(() => { window.__failDelete = false; });
+    await page.click(".book .b-del");
+    await page.click(".book .b-del");
+    await expect(page.locator(".book")).toHaveCount(0);
+  });
+
   test("a transient storage failure doesn't leave the storage-error message on a healthy shelf", async ({ page }) => {
     // fail the FIRST indexedDB.open only — openDB() is deliberately retryable
     await page.addInitScript(() => {

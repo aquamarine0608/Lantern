@@ -193,6 +193,69 @@ test.describe("reader view", () => {
     await expect(page.locator(".sent").first()).toHaveText(/Chapter One/);
   });
 
+  /* German (and Czech/Slovak) close a quotation with “ (U+201C) — the very codepoint
+     Simplified Chinese OPENS with. It was missing from SENT_END_RE's Latin closing
+     class, so `(?=\s|$)` failed right after the period and the whole „…“ sentence ran
+     on into the next one. The CJK branch must stay untouched. */
+  test("German „…“ quotes end a sentence; a Chinese opening “ still does not", async ({ page }) => {
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "german.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({
+        title: "Deutsches Buch",
+        chapters: [{
+          title: "Kapitel",
+          paras: [
+            "Sie sagte: „Ich komme später.“ Dann ging sie nach Hause.",
+            "Er sagte: ‚Hallo.‘ Dann ging er.",
+            "他说：“我来了。”然后他走了。",
+          ],
+        }],
+      }),
+    });
+    await page.click(".book");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await expect(page.locator(".sent").first()).toBeVisible();
+    const texts = await page.evaluate(() => [...document.querySelectorAll(".sent")].map((e) => e.textContent));
+    // heading + 2 + 2 + 2 = 7 units; before the fix each German paragraph stayed one
+    expect(texts).toHaveLength(7);
+    expect(texts[1]).toMatch(/^Sie sagte: „Ich komme später\.“\s*$/);
+    expect(texts[2]).toMatch(/^Dann ging sie nach Hause\.\s*$/);
+    expect(texts[3]).toMatch(/^Er sagte: ‚Hallo\.‘\s*$/);
+    expect(texts[5]).toBe("他说：“我来了。”"); // CJK branch unchanged — no injected space, closer kept
+    expect(texts.join("")).toContain("他说：“我来了。”然后他走了。");
+  });
+
+  /* a closed-up em dash (word—word) is standard American prose typography for a
+     parenthetical aside. It was not in ABBREV_END_RE's leading-boundary class, so a
+     title abbreviation sitting right after one ("person—Mr.") read as a sentence end
+     and cut the audio mid-name. */
+  test("an abbreviation right after a closed-up dash does not split the sentence", async ({ page }) => {
+    await page.goto("/");
+    await page.setInputFiles("#bookFile", {
+      name: "dashes.epub", mimeType: "application/epub+zip",
+      buffer: makeEpub({
+        title: "Dash Book",
+        chapters: [{
+          title: "Chapter One",
+          paras: [
+            "Only one person—Mr. Harding—understood the plan. He was later thanked.",
+            "It was the end—Mr. Bennet arrived. He left.",
+            "She called—Dr. Watson answered. Then silence.",
+          ],
+        }],
+      }),
+    });
+    await page.click(".book");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await expect(page.locator(".sent").first()).toBeVisible();
+    const texts = await page.evaluate(() => [...document.querySelectorAll(".sent")].map((e) => e.textContent));
+    expect(texts).toHaveLength(7); // heading + 2 + 2 + 2, not 10
+    expect(texts[1]).toMatch(/^Only one person—Mr\. Harding—understood the plan\.\s*$/);
+    expect(texts[3]).toMatch(/^It was the end—Mr\. Bennet arrived\.\s*$/);
+    expect(texts[5]).toMatch(/^She called—Dr\. Watson answered\.\s*$/);
+  });
+
   test("back returns to the library", async ({ page }) => {
     await openFirstBook(page);
     await page.click("#backBtn");
