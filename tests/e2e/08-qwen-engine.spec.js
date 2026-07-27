@@ -858,7 +858,10 @@ test.describe("Qwen3-TTS server engine", () => {
      commit — i.e. inside press 1 of the very tap aimed at Done / Engine / A+ — and
      used to slide the target ~68 px down before mouseup, so the click retargeted to
      the sheet body and the tap did nothing at all (while the address committed
-     silently). It took a second tap to reach the control the user had aimed at. */
+     silently). It took a second tap to reach the control the user had aimed at.
+     { delay: 80 } is the point of these two: a 0 ms synthetic press is dispatched as
+     one burst, so it passed even against a one-frame deferral. A real mouse press is
+     50–150 ms — many frames — and only holding the collapse until pointerup survives it. */
   test("committing the server address by tapping Done does not eat that tap", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.setViewportSize({ width: 390, height: 844 }); // under the 70dvh cap, so the top edge really moves
@@ -872,7 +875,7 @@ test.describe("Qwen3-TTS server engine", () => {
     // commit collapses the note
     await page.fill("#qwenUrl", QWEN_URL);
     await expect(page.locator("#qwenDraftNote")).toBeVisible();
-    await page.click(".sheet:not([hidden]) .sheet-done"); // ONE tap, focus still in the field
+    await page.click(".sheet:not([hidden]) .sheet-done", { delay: 80 }); // ONE real-length press, focus still in the field
     await expect(page.locator("#sheetBackdrop")).toBeHidden(); // used to need a second tap
     expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(QWEN_URL);
   });
@@ -888,7 +891,7 @@ test.describe("Qwen3-TTS server engine", () => {
     await page.click("#libVoiceBtn");
     await page.fill("#qwenUrl", QWEN_URL);
     await expect(page.locator("#qwenDraftNote")).toBeVisible();
-    await page.click('#engineBtns button[data-e="kokoro"]'); // ONE tap, focus still in the field
+    await page.click('#engineBtns button[data-e="kokoro"]', { delay: 80 }); // ONE real-length press, focus still in the field
     expect(await page.evaluate(() => localStorage.getItem("lantern.engine"))).toBe("kokoro");
     await expect(page.locator("#qwenCfg")).toBeHidden();
   });
@@ -1300,6 +1303,49 @@ test.describe("Qwen3-TTS server engine", () => {
     await expect(page.locator("#banner")).toBeInViewport(); // used to be far below the fold
   });
 
+  /* …and the reveal has to measure the layout the import LEAVES BEHIND. revealBanner()
+     used to be the last statement of the import's try, with the `finally` restoring
+     addBookBtn from "Adding…" to "Add a book · EPUB" immediately afterwards — a
+     re-wrap of .lib-actions, which sits ABOVE the in-flow banner, so the banner the
+     reveal had just scrolled flush with the fold dropped ~20 px (one whole line of it)
+     back off screen. Chromium's scroll anchoring silently compensates, which is why
+     the round-28 spec above never saw it; WebKit implements no scroll anchoring at
+     all, and this is an iOS-first app. `overflow-anchor: none` reproduces WebKit. */
+  test("the banner an import reveals is still fully on screen once the button label is back", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript(() => {
+      const add = () => {
+        const s = document.createElement("style");
+        s.textContent = "* { overflow-anchor: none !important; }"; // WebKit has none
+        (document.head || document.documentElement).appendChild(s);
+      };
+      if (document.head || document.documentElement) add();
+      else document.addEventListener("DOMContentLoaded", add, { once: true });
+    });
+    await page.setViewportSize({ width: 390, height: 780 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      // same-host unfinished key edit: a hold that no import may clear
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "", k: "sk-draft", bv: url, bk: url }));
+    }, QWEN_URL);
+    await page.goto("/");
+    for (let i = 1; i <= 8; i++) await importEpub(page, { name: `book${i}.epub`, title: `Shelf Filler ${i}` });
+    await expect(page.locator(".book")).toHaveCount(8); // the shelf overflows the viewport
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    // the import that reveals the standing hold — and then re-wraps the row above it
+    await importEpub(page, { name: "book9.epub", title: "Shelf Filler 9" });
+    await expect(page.locator(".book")).toHaveCount(9);
+    await expect(page.locator("#addBookBtn")).toHaveText("Add a book · EPUB"); // the finally has run
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit"); // never cleared
+    const box = await page.locator("#banner").boundingBox();
+    const vh = page.viewportSize().height;
+    expect(box.y + box.height).toBeLessThanOrEqual(vh + 1); // used to sit ~20px past the fold
+  });
+
   test("answering a hold by retyping the live value takes it down — for good", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.addInitScript((url) => {
@@ -1549,11 +1595,16 @@ test.describe("Qwen3-TTS server engine", () => {
   /* The banner promises "Tap play to try again" the instant synthesis throws — but the
      park that makes play MEAN retry lives in finish()'s genFailed branch, which cannot
      run until every buffer scheduled before the failure has drained (up to the whole
-     90 s backpressure window). Mid-drain the tap used to suspend the context instead:
-     no new synthesis, and — because a suspended context freezes currentTime — onended
-     never fired, so the park never arrived and the promised retry became unreachable.
-     The round-27 spec above only covers a sentence-1 failure, where nothing is
-     scheduled and finish() parks immediately. */
+     90 s backpressure window). Mid-drain the tap used to suspend the context and stop
+     there: no new synthesis, and — because a suspended context freezes currentTime —
+     onended never fired, so the park never arrived and the promised retry became
+     unreachable. Round 28 turned that tap into an immediate retry, which fixed the
+     dead end but broke the label: the control is still wearing the PAUSE glyph
+     mid-drain, so the ONE thing the user could not do from inside the app was stop
+     the audio. Both properties now hold — tap 1 parks (which is what the button
+     says), tap 2 retries (which is what the banner says). The round-27 spec above
+     only covers a sentence-1 failure, where nothing is scheduled and finish() parks
+     immediately. */
   test("the failure banner's play tap retries even while earlier audio is still draining", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     // one long chapter: the qwen mock answers 0.5 s of audio per sentence, so a
@@ -1576,11 +1627,21 @@ test.describe("Qwen3-TTS server engine", () => {
     await expect(page.locator("#bannerText")).toContainText("Tap play to try again.", { timeout: 20_000 });
     // the promise is made mid-drain — the reading is still running, so the park has not happened
     await expect(page.locator("#rPlay")).toHaveAttribute("aria-label", "Pause");
-    await setQwenFail(false);
+    await setQwenFail(false); // the server is healthy again: any new request is the app's doing
     const beforeTap = (await getQwenRequests()).length;
-    await page.click("#rPlay"); // used to suspend the context: zero new synthesis, forever
+    // tap 1 lands on a control labelled "Pause", so it must PAUSE — and it must park
+    // (not merely suspend), so the next tap is the retry the banner promises
+    await page.click("#rPlay");
+    await expect(page.locator("#rPlay")).toHaveAttribute("aria-label", "Play");
+    await expect(page.locator("#rStatus")).toContainText("tap play to retry");
+    // the audio really stopped — not just the icon
+    expect(await page.evaluate(() => document.querySelector("audio") ? document.querySelector("audio").paused : true)).toBe(true);
+    await page.waitForTimeout(1500);
+    expect((await getQwenRequests()).length - beforeTap).toBe(0); // a pause synthesises nothing
+    // tap 2 is the retry
+    await page.click("#rPlay");
     await expect.poll(async () => (await getQwenRequests()).length - beforeTap, { timeout: 20_000 }).toBeGreaterThan(0);
     await expect(page.locator(".sent.speaking")).toHaveCount(1);
-    await expect(page.locator("#rPlay")).toHaveAttribute("aria-label", "Pause"); // it retried, it did not pause
+    await expect(page.locator("#rPlay")).toHaveAttribute("aria-label", "Pause"); // it retried
   });
 });

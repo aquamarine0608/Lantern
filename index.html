@@ -233,7 +233,9 @@
   .sheet-backdrop { position: fixed; inset: 0; background: rgba(4,8,14,.55); z-index: 8; }
   /* bottom-anchored: every height change is paid for out of the TOP edge, so nothing
      inside a sheet may grow or shrink from a blur handler — that runs inside press 1
-     of a tap and slides the target out from under press 2 (see updateQwenDraftNote) */
+     of a tap and slides the target out from under press 2. Such a change has to wait
+     until the pointer is released; deferring by a frame only covers a synthesized
+     press, since a real mouse press spans many frames (see updateQwenDraftNote) */
   .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9; background: var(--page); border-top: 1px solid var(--line); border-radius: 18px 18px 0 0; padding: 16px 16px calc(18px + env(safe-area-inset-bottom)); max-height: 70dvh; overflow-y: auto; max-width: 640px; margin: 0 auto; }
   .sheet-title { font-family: var(--serif); font-style: italic; font-size: 18px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
   .sheet-done { background: var(--lamp); color: var(--ink); border: 0; border-radius: 10px; padding: 8px 16px; font-family: var(--body); font-style: normal; font-size: 13px; font-weight: 600; cursor: pointer; }
@@ -1784,9 +1786,19 @@ bookFile.addEventListener("change", async () => {
        unanswered qwen hold (the settings commits clear it when it IS answered) */
     if (errBannerSeq === bannerAtStart && !bannerIsQwenHold()) clearErrorBanner();
     await renderLibrary();
-    revealBanner(); /* the shelf just grew under a standing hold */
   } finally {
+    /* restore the label BEFORE revealing. addBookBtn is a flex child of .lib-actions,
+       which sits ABOVE the in-flow banner, and "Add a book · EPUB" re-wraps the narrow
+       .primary to two lines where "Adding…" fit on one (+20 px at 390/412/430).
+       Revealing first scrolls the banner flush with the fold and this line then pushes
+       its last line ~20 px off screen — WebKit has no scroll anchoring to absorb it,
+       and Chromium's silently hides the bug. Revealing HERE also covers the two error
+       arms above: showBanner scrolled them into view and then returned straight into
+       this block. revealBanner is self-guarding (a no-op unless a visible error banner
+       is standing, and in the reader where the banner is position:fixed), so it is
+       safe on every exit path. */
     addBookBtn.disabled = false; addBookBtn.textContent = "Add a book · EPUB";
+    revealBanner(); /* the shelf just grew under a standing hold */
   }
 });
 
@@ -2224,12 +2236,28 @@ function readerToggle(force) {
   /* the failure banner says "Tap play to try again" the moment generation throws —
      but the park that makes play mean retry lives in finish()'s genFailed branch,
      which cannot run until every buffer scheduled BEFORE the failure has drained:
-     up to the whole 90 s backpressure window, and never at all once this tap
-     suspends the clock (a suspended context freezes currentTime, so last.onended
-     never fires). Retry now instead, from wherever playback actually is —
-     readerPlayFrom re-reads the already-cached sentences instantly and reaches the
-     failed one again. force === false (an OS/lock-screen pause) still pauses. */
+     up to the whole 90 s backpressure window. Two different taps can land in that
+     window, and they must not do the same thing:
+     - the in-app rPlay tap (force undefined) arrives at a control still showing the
+       PAUSE glyph and aria-label "Pause" (this run set it at the post-warm-up settle
+       and the failure catch deliberately leaves rd.playing/the icon alone), so it is
+       a request for silence and must deliver it. A bare ctx.suspend() would freeze
+       currentTime and strand last.onended forever, so run the genFailed park inline
+       instead — audio stops, the icon flips to Play, and the NEXT tap falls through
+       to the !rd.started branch below, which IS the retry the banner promises.
+     - a lock-screen play (force === true) is already asking to start, and force ===
+       false is an OS pause: both keep their old meaning. */
   if (rd.genFailed && force !== false) {
+    if (force === undefined && rd.started && rd.ctx && rd.ctx.state === "running") {
+      rd.ctx.suspend();
+      rd.playing = false; rd.started = false;
+      setReaderIcon("play");
+      updateReaderStatus("tap play to retry");
+      if (audioEl) audioEl.pause();
+      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+      saveReaderProgress();
+      return;
+    }
     readerPlayFrom(rd.si >= rd.sentences.length ? 0 : (rd.si || 0));
     return;
   }
@@ -2536,22 +2564,50 @@ const sibsMayRide = v => (!qwenVoiceBase || qwenVoiceBase === v) && (!qwenKeyBas
    before mouseup; the click then retargets to the sheet (or the backdrop) and the tap
    does nothing at all, while the address commits silently. Same press-1-moves-press-2
    class as the fixed 2lh .r-status box and the floated reader banner. Hold the
-   collapse for one frame — by then the click has been dispatched. SHOWING it stays
-   synchronous: that only ever happens on `input` in the field itself. */
-let noteCollapseRaf = 0;
+   collapse until the POINTER IS RELEASED — a frame is only enough for a synthesized
+   press. SHOWING it stays synchronous: that only ever happens on `input` in the
+   field itself. */
+let noteCollapseRaf = 0, noteCollapseHeld = false, pointerIsDown = false;
+/* one frame is enough only for a SYNTHESIZED press (touch delivers mousedown/mouseup/
+   click in one task, after pointerup — and so does a 0-delay synthetic click). A real
+   mouse or trackpad press lasts 50–150 ms — many frames — so a rAF taken inside press 1
+   fires BEFORE mouseup and still slides the target out from under the pointer. Hold the
+   collapse for as long as a pointer is down, then take the frame; the click rides the
+   pointerup task, so the frame lands after it. */
+addEventListener("pointerdown", () => { pointerIsDown = true; }, true);
+function releaseNoteCollapse() {
+  pointerIsDown = false;
+  if (noteCollapseHeld) { noteCollapseHeld = false; scheduleNoteCollapse(); }
+}
+addEventListener("pointerup", releaseNoteCollapse, true);
+addEventListener("pointercancel", releaseNoteCollapse, true);
+function scheduleNoteCollapse() {
+  if (pointerIsDown) { noteCollapseHeld = true; return; }
+  if (!noteCollapseRaf) noteCollapseRaf = requestAnimationFrame(collapseQwenDraftNote);
+}
+function cancelNoteCollapse() {
+  noteCollapseHeld = false;
+  if (noteCollapseRaf) { cancelAnimationFrame(noteCollapseRaf); noteCollapseRaf = 0; }
+}
 function collapseQwenDraftNote() {
-  noteCollapseRaf = 0;
+  noteCollapseRaf = 0; noteCollapseHeld = false;
   if (engine === "qwen" && normalizeServerUrl(qwenUrl.value) !== qwenServer) return; /* diverged again meanwhile */
+  /* [hidden] is display:none: hiding the subtree that OWNS focus drops it to <body>
+     inside the open modal where every sheetInert region is inert — Tab out of the
+     Server field lands on qwenUseShown, and this collapse would then unrender it.
+     Same rule and same landing as the qwenUseShown guard below, and safe here for the
+     same reason: the blur commit has already fully returned. */
+  if (qwenDraftNote.contains(document.activeElement)) qwenUrl.focus();
   qwenDraftNote.hidden = true;
 }
 function updateQwenDraftNote() {
   const shown = normalizeServerUrl(qwenUrl.value);
   const diverged = engine === "qwen" && shown !== qwenServer;
   if (!diverged) {
-    if (!qwenDraftNote.hidden && !noteCollapseRaf) noteCollapseRaf = requestAnimationFrame(collapseQwenDraftNote);
+    if (!qwenDraftNote.hidden) scheduleNoteCollapse();
     return;
   }
-  if (noteCollapseRaf) { cancelAnimationFrame(noteCollapseRaf); noteCollapseRaf = 0; }
+  cancelNoteCollapse();
   qwenDraftNote.hidden = false;
   qwenDraftNoteText.textContent = qwenServer
     ? `Not saved yet — reading still uses ${qwenServer}.`
@@ -2571,11 +2627,12 @@ function updateQwenDraftNote() {
    identical text that refuseSibling's innerHTML guard dedupes). */
 qwenUseShown.addEventListener("click", () => {
   qwenUrlTouched = true; commitQwenUrl(); updateQwenDraftNote();
-  /* the collapse is deferred by a frame for the BLUR path, where it would move the
-     tapped control out from under press 2 — but this IS press 2, already dispatched,
-     so take it now: leaving the note standing for a frame would hand the focus check
-     below a button that is still rendered and drop focus to <body> a frame later */
-  if (noteCollapseRaf) { cancelAnimationFrame(noteCollapseRaf); collapseQwenDraftNote(); }
+  /* the collapse is deferred until the pointer is up for the BLUR path, where it would
+     move the tapped control out from under press 2 — but this IS press 2, already
+     dispatched, so take it now (a HELD collapse counts too: a pointer released outside
+     the window leaves the flag standing): leaving the note up for a frame would hand
+     the focus check below a button that is still rendered and drop focus a frame later */
+  if (noteCollapseRaf || noteCollapseHeld) { cancelNoteCollapse(); collapseQwenDraftNote(); }
   if (qwenUseShown.offsetParent === null) qwenUrl.focus();
 });
 qwenUrl.addEventListener("input", updateQwenDraftNote);

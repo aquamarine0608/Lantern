@@ -156,6 +156,52 @@ test.describe("accessibility and input", () => {
     expect(await page.evaluate(() => document.activeElement.id)).toBe("qwenVoice");
   });
 
+  /* The same [hidden] = display:none hazard, reached the other way round: the note
+     collapses from the Server field's BLUR commit, and Tab out of that field lands on
+     #qwenUseShown — inside the note. The deferred collapse then unrendered the very
+     button focus had just moved to, dropping focus to <body> inside the open modal
+     where every sheetInert region is inert. The round-28 guard could not catch this:
+     it lives in the button's own click handler, which a Tab never dispatches. */
+  test("tabbing out of the Server field never strands focus on the collapsing note", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", "https://old-host.example"); // live, no draft
+    });
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.fill("#qwenUrl", "https://new-host.example"); // fill = typed = touched, so blur commits
+    await expect(page.locator("#qwenDraftNote")).toBeVisible();
+    await page.keyboard.press("Tab"); // focus lands on #qwenUseShown while the commit collapses the note
+    await expect(page.locator("#qwenDraftNote")).toBeHidden();
+    await expect(page.locator("#setSheet")).toBeVisible();
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement.id), { timeout: 2_000 })
+      .toBe("qwenUrl"); // used to be BODY, inert-trapped
+    await page.keyboard.press("Tab"); // and the documented Tab order still holds
+    expect(await page.evaluate(() => document.activeElement.id)).toBe("qwenVoice");
+  });
+
+  /* and the pointer path at a real press length: the collapse is HELD while the button
+     is down, so the click still reaches qwenUseShown's handler, which flushes the held
+     collapse itself (belt and braces with the guard above — either one alone keeps
+     focus off <body> here; only both keep it off on every path) */
+  test("a real-length press on Use this address keeps focus in the sheet", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", "https://live.example");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "https://draft.example", v: "", k: "" }));
+    });
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#qwenUseShown")).toBeVisible();
+    await page.click("#qwenUseShown", { delay: 80 });
+    await expect(page.locator("#qwenDraftNote")).toBeHidden();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe("https://draft.example");
+    expect(await page.evaluate(() => document.activeElement.id)).toBe("qwenUrl"); // never BODY
+    await page.keyboard.press("Tab");
+    expect(await page.evaluate(() => document.activeElement.id)).toBe("qwenVoice");
+  });
+
   test("the settings-sheet speed and engine buttons keep a real touch height", async ({ page }) => {
     await page.goto("/");
     await importEpub(page);
