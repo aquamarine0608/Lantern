@@ -100,7 +100,10 @@
   }
   .primary:active { transform: scale(.985); }
   .primary:disabled { opacity: .45; }
-  .primary.stopping { background: var(--ember); color: var(--chalk); }
+  /* --ink on --ember is 5.58:1 (AA); --chalk on --ember was 2.81:1, under even the
+     3:1 large-text floor — and 17px/600 is not large text. Same idiom as .primary
+     and .speeds button.on: dark ink on a saturated warm fill. */
+  .primary.stopping { background: var(--ember); color: var(--ink); }
   .primary.working { animation: breathe 2.2s ease-in-out infinite; }
   @keyframes breathe { 50% { box-shadow: 0 0 22px rgba(242,178,76,.35); } }
   @media (prefers-reduced-motion: reduce) { .primary.working, .pbtn.working { animation: none; } .model-state.busy .dot { animation: none; } }
@@ -164,7 +167,10 @@
   .save-btn:disabled { opacity: .4; }
   .hint { font-size: 11.5px; color: var(--mist); opacity: .75; }
 
-  footer { text-align: center; font-size: 11.5px; color: var(--mist); opacity: .65; padding-top: 2px; }
+  /* .65 composites --mist over --ink to #626F83 = 3.61:1, under the 4.5:1 AA floor
+     for 11.5px normal-weight text; .8 gives #75849A = 4.85:1 and stays subordinate
+     to .model-state (12.5px --mist at full opacity). */
+  footer { text-align: center; font-size: 11.5px; color: var(--mist); opacity: .8; padding-top: 2px; }
 
   /* ---------- views ---------- */
   .view { display: none; }
@@ -183,7 +189,7 @@
      styled to be layout-invisible inside the card */
   .book-open { display: flex; flex-direction: column; gap: 7px; width: 100%;
                background: none; border: 0; padding: 0; margin: 0;
-               color: inherit; font: inherit; text-align: left; cursor: pointer; }
+               color: inherit; font: inherit; text-align: start; cursor: pointer; }
   /* stretch the button's hit area over the whole card (padding ring + gaps) so no
      part of a card that advertises cursor:pointer is dead — Remove lifts above it */
   .book-open::after { content: ""; position: absolute; inset: 0; border-radius: 14px; }
@@ -195,7 +201,7 @@
   .b-progress { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
   .b-progress i { display: block; height: 100%; background: var(--lamp); }
   /* z-lifted above the .book-open::after overlay; padded to a real touch target */
-  .b-del { position: relative; z-index: 1; background: none; border: 0; color: var(--mist); font-size: 12px; padding: 10px 0; min-height: 36px; cursor: pointer; text-align: left; }
+  .b-del { position: relative; z-index: 1; background: none; border: 0; color: var(--mist); font-size: 12px; padding: 10px 0; min-height: 36px; cursor: pointer; text-align: start; }
   .b-del.confirm { color: var(--ember); font-weight: 600; }
   .lib-empty { color: var(--mist); font-size: 14px; text-align: center; padding: 34px 12px; line-height: 1.6; }
 
@@ -209,7 +215,13 @@
   .r-book { font-size: 11.5px; color: var(--mist); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .r-chap { font-family: var(--serif); font-style: italic; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .r-scroll { flex: 1; min-height: 0; overflow-y: auto; background: var(--page); border: 1px solid var(--line); border-radius: 16px; }
-  .r-content { padding: 22px 18px 30vh; font-family: var(--serif); font-size: var(--reader-font, 19px); line-height: 1.75; }
+  /* a bare URL, a long identifier or an OCR-dropped space produces one token wider
+     than the column; .r-scroll's overflow-y:auto promotes overflow-x to auto, so
+     without this the tail is clipped off the right edge with no ellipsis and no
+     visible scrollbar (iOS overlay scrollbars), and block:"center" scrollIntoView
+     — vertical only — never reveals it. break-word, not anywhere: only break a
+     token that cannot fit a line by itself. */
+  .r-content { overflow-wrap: break-word; padding: 22px 18px 30vh; font-family: var(--serif); font-size: var(--reader-font, 19px); line-height: 1.75; }
   .r-content h2 { font-family: var(--serif); font-style: italic; font-weight: 400; font-size: 1.35em; margin: 0 0 20px; }
   .r-content p { margin: 0 0 1em; }
   .sent { border-radius: 4px; cursor: pointer; }
@@ -239,7 +251,9 @@
   .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9; background: var(--page); border-top: 1px solid var(--line); border-radius: 18px 18px 0 0; padding: 16px 16px calc(18px + env(safe-area-inset-bottom)); max-height: 70dvh; overflow-y: auto; max-width: 640px; margin: 0 auto; }
   .sheet-title { font-family: var(--serif); font-style: italic; font-size: 18px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
   .sheet-done { background: var(--lamp); color: var(--ink); border: 0; border-radius: 10px; padding: 8px 16px; font-family: var(--body); font-style: normal; font-size: 13px; font-weight: 600; cursor: pointer; }
-  .toc-list button { display: block; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); color: var(--chalk); font-size: 15px; padding: 13px 4px; cursor: pointer; }
+  /* text-align: start, not left — an RTL chapter title (the buttons carry dir="auto")
+     must hug the side its own script reads from */
+  .toc-list button { display: block; width: 100%; text-align: start; background: none; border: 0; border-bottom: 1px solid var(--line); color: var(--chalk); font-size: 15px; padding: 13px 4px; cursor: pointer; }
   .toc-list button:last-child { border-bottom: 0; }
   .toc-list button.current { color: var(--lamp); font-weight: 600; }
   .toc-list button.current::before { content: "▸ "; } /* colour must not be the only cue */
@@ -574,15 +588,38 @@ const words = t => (t.trim().match(/\S+/g) || []).length;
    (Chinese/Japanese): split(/\s+/) yields ONE token there, so a word cap alone
    would make the whole paste the MediaMetadata title / now-reading line. Cap
    code units too, backing off a trailing lone high surrogate. */
+/* a cut that lands between a base character and its combining marks silently
+   DE-ACCENTS the last letter ("animé" → "anime", "का" → "क") rather than
+   truncating it — retreat past the whole cluster, marks and base alike. */
+const MARK_RE = /\p{M}/u;
+const markAt = (s, i) => { const c = s.codePointAt(i); return c !== undefined && MARK_RE.test(String.fromCodePoint(c)); };
 function excerpt(text, maxWords, maxChars = 60) {
   let s = text.trim().split(/\s+/).slice(0, maxWords).join(" ");
   if (s.length > maxChars) {
     let cut = maxChars;
     if ((s.charCodeAt(cut - 1) & 0xFC00) === 0xD800) cut--; /* never end on a lone high surrogate */
+    if (markAt(s, cut)) {                                   /* nor mid-grapheme */
+      let k = cut;
+      while (k > 0 && markAt(s, k)) k--;                    /* back past the marks… */
+      if ((s.charCodeAt(k) & 0xFC00) === 0xDC00) k--;       /* …and their (possibly astral) base */
+      if (k > 0) cut = k;                                   /* an all-marks string keeps the old cut */
+    }
     s = s.slice(0, cut).trim();
   }
   return s;
 }
+/* the cover-tile initial is a GRAPHEME, not a code point: combining marks are their
+   own code points trailing the base letter, so [...w][0] on an NFD title ("Ừng"
+   stored as U+0055 U+031B U+0300) yields a bare "U" — the same 36px-wrong-glyph
+   hazard as a lone surrogate half. Segmenter also keeps flag/ZWJ emoji whole.
+   NFC composition is the no-Segmenter fallback. */
+const _graphemeSeg = typeof Intl !== "undefined" && Intl.Segmenter
+  ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+const firstGrapheme = w => {
+  if (!w) return "";
+  if (_graphemeSeg) return (_graphemeSeg.segment(w)[Symbol.iterator]().next().value || {}).segment || "";
+  return [...w.normalize("NFC")][0] || "";
+};
 function setModelState(cls, txt) { modelState.className = "model-state " + cls; modelStateText.textContent = txt; }
 /* clear-then-set: assigning the SAME string can be deduped by AT, and re-picking
    the same bad file must announce again rather than fall silent the second time.
@@ -740,6 +777,12 @@ function loadModel(quiet) {
       showBanner(`<b>Downloading the voice model…</b>${MODEL_CACHEABLE ? " One time only." : ""}`, { bar: true });
   });
   const seen = new Map();
+  /* a new attempt starts at zero bytes: the fill still carries the inline width the
+     previous, abandoned attempt died at (or 100% from the last success), and reopening
+     the bar there renders a full-looking download and then visibly rewinds on the first
+     real tick. Only reset for a NEW attempt — the join branch above must keep the
+     in-flight attempt's live progress. */
+  bannerFill.style.width = "0%";
   if (!cachedBefore && !quiet) showBanner(MODEL_CACHEABLE
     ? `<b>First run:</b> downloading the voice model (about 90 MB). It's stored on this device — after this, Lantern reads offline.`
     : `<b>Downloading the voice model (about 90 MB).</b> This address isn't HTTPS, so the browser can't keep the model between visits — it will download again next time. Use an HTTPS address (or localhost) to make it stick.`, { bar: true });
@@ -1103,10 +1146,15 @@ function setMediaSession(playing) {
 
 /* an ended (not paused) session must fully release the transport: a surviving play
    handler falls through togglePlay() into setMediaSession(true) and re-asserts
-   "playing" against a closed context forever */
+   "playing" against a closed context forever. Same rule as readerTeardown for the
+   metadata: a GONE session must drop its title too, or the OS Now Playing panel keeps
+   the abandoned paste excerpt — through a route change AND through opening a different
+   book, since readerPlayFrom only overwrites it in setReaderMediaSession, after
+   ensureReaderAudio() has already started playing the stream. */
 function releaseMediaSession() {
   if (!("mediaSession" in navigator)) return;
   navigator.mediaSession.playbackState = "paused";
+  navigator.mediaSession.metadata = null;
   try {
     navigator.mediaSession.setActionHandler("play", null);
     navigator.mediaSession.setActionHandler("pause", null);
@@ -1358,7 +1406,22 @@ readBtn.addEventListener("click", async () => {
       const at = Math.max(scheduleT, ctx.currentTime + 0.03);
       src.start(at); scheduleT = at + buf.duration;
       totalDur = scheduleT - t0;
+      src.__endsAt = scheduleT;
       sources.push(src);
+      /* release audio already played — same reason as the reader's drain: a source
+         node still referenced from JS pins its whole AudioBuffer, so a chapter-sized
+         paste would hold every played second a SECOND time (~96 KB per audio-second)
+         on top of the copy `chunks` keeps for WAV export. Keep the newest entry
+         unconditionally: the done-live handoff below reads sources' tail. Dropping
+         ended nodes is invisible to the stop-all loops in resetSession/switchToFile —
+         stop() on a finished node is a no-op — and ctx.currentTime freezes while the
+         context is suspended, so a paused session drains nothing. */
+      {
+        let drained = 0;
+        const nowT = ctx.currentTime;
+        while (drained < sources.length - 1 && sources[drained].__endsAt < nowT - 1) drained++;
+        if (drained) sources.splice(0, drained);
+      }
       sentDone++;
       statusLine.textContent = `Reading aloud — sentence ${sentDone} of ~${Math.max(sentTotal, sentDone)} · ${genLabel()}`;
     }
@@ -1588,11 +1651,32 @@ const splitSentences = text => {
    Denylist, not allowlist: an unrecognised extension is still inflated, so an oddly
    named content document can never go missing. */
 const EPUB_ASSET_RE = /\.(png|jpe?g|gif|webp|svg|bmp|tiff?|ico|avif|ttf|otf|ttc|otc|woff2?|eot|mp3|m4a|m4b|aac|oga|ogg|opus|wav|flac|mp4|m4v|webm|mov|avi|css|js|mjs)$/i;
+const MAX_EPUB_BYTES  = 128 * 1024 * 1024; /* .epub on disk */
+const MAX_UNZIP_BYTES = 384 * 1024 * 1024; /* total inflated — fflate allocates
+   exactly originalSize per entry and retains every one, so an archive that
+   declares gigabytes jetsams the tab before any catch can run */
+const MAX_COVER_BYTES = 32 * 1024 * 1024;  /* the cover's own second pass is outside
+   the budget above: one entry, so cap it on its own rather than let a declared-huge
+   image kill an otherwise readable book */
 function parseEpub(arrayBuf) {
   const bytes = new Uint8Array(arrayBuf);
-  let zip;
-  try { zip = unzipSync(bytes, { filter: f => !EPUB_ASSET_RE.test(f.name) }); }
-  catch { throw new Error("not a zip archive"); }
+  let zip, budget = MAX_UNZIP_BYTES, oversize = false;
+  try {
+    /* ONE filter, two jobs. fflate calls it immediately before allocating
+       new u8(originalSize) for that entry — the only place we can stop it.
+       Denylisted assets are never inflated, so they cost nothing and are not
+       charged. Everything else is charged and THROWS when the budget runs out:
+       returning false there would silently truncate the book into a
+       partially-imported one instead of failing the import. */
+    zip = unzipSync(bytes, {
+      filter: f => {
+        if (EPUB_ASSET_RE.test(f.name)) return false;
+        if ((budget -= f.originalSize) < 0) { oversize = true; throw new Error("oversize"); }
+        return true;
+      },
+    });
+  }
+  catch { throw new Error(oversize ? "EPUB too large" : "not a zip archive"); }
   const textOf = p => { const f = zip[p]; if (!f) throw new Error("missing " + p); return strFromU8(f); };
   const parse = (s, type) => {
     const doc = new DOMParser().parseFromString(s, type || "application/xml");
@@ -1625,12 +1709,18 @@ function parseEpub(arrayBuf) {
   const author = dc("creator").join(", ");
 
   const manifest = new Map();
-  for (const it of opf.querySelectorAll("manifest > item"))
-    manifest.set(it.getAttribute("id"), {
+  for (const it of opf.querySelectorAll("manifest > item")) {
+    const id = it.getAttribute("id");
+    /* id is required; keying a missing/empty one as null would collide with the
+       null a missing idref (or a contentless <meta name="cover">) looks up, letting
+       an unreferenced resource resolve as a real chapter. A unique symbol keeps the
+       item in values() for the cover-image/nav property scans but unreachable by id. */
+    manifest.set(id || Symbol("no-id"), {
       href: it.getAttribute("href") || "",
       type: it.getAttribute("media-type") || "",
       props: (it.getAttribute("properties") || "").split(/\s+/),
     });
+  }
 
   /* cover: EPUB3 cover-image property, else the EPUB2 <meta name="cover"> pointer */
   let cover = null;
@@ -1644,7 +1734,9 @@ function parseEpub(arrayBuf) {
     /* the cover was filtered out above; re-scan the central directory for just it.
        Same name comparison as before, so encoded-href behaviour is unchanged. */
     let data = zip[coverPath];
-    if (!data) { try { data = unzipSync(bytes, { filter: f => f.name === coverPath })[coverPath]; } catch {} }
+    /* capped on its own: this pass is outside the whole-archive budget, and a book
+       with one absurdly declared cover image should lose the cover, not the book */
+    if (!data) { try { data = unzipSync(bytes, { filter: f => f.name === coverPath && f.originalSize <= MAX_COVER_BYTES })[coverPath]; } catch {} }
     if (data) cover = new Blob([data], { type: coverItem.type });
   }
 
@@ -1792,17 +1884,20 @@ async function renderLibrary() {
       cover.appendChild(img);
     } else {
       const ini = document.createElement("span"); ini.className = "initials";
-      /* by CODE POINT, not code unit: w[0] on an emoji / astral first letter
-         (🌟, 𝐀, a Plane-2 CJK ideograph) yields a lone high surrogate, which paints
-         as a 36px U+FFFD on the cover tile — same surrogate back-off excerpt() and
-         splitLong() already apply. */
-      ini.textContent = (b.title || "?").split(/\s+/).slice(0, 2).map(w => [...w][0] || "").join("").toUpperCase();
+      /* by GRAPHEME CLUSTER, not code unit or code point: w[0] on an emoji / astral
+         first letter (🌟, 𝐀, a Plane-2 CJK ideograph) yields a lone high surrogate,
+         which paints as a 36px U+FFFD on the cover tile, and [...w][0] on an NFD title
+         drops the combining marks and shows the unaccented base letter instead. */
+      ini.textContent = (b.title || "?").split(/\s+/).slice(0, 2).map(firstGrapheme).join("").toUpperCase();
       cover.appendChild(ini);
     }
     open.appendChild(cover);
 
-    const t = document.createElement("div"); t.className = "b-title"; t.textContent = b.title; open.appendChild(t);
-    const a = document.createElement("div"); a.className = "b-author"; a.textContent = b.author || "Unknown author"; open.appendChild(a);
+    /* dir="auto" on every node that renders BOOK text (never on UI chrome): an
+       Arabic/Hebrew title must resolve its own base direction instead of inheriting
+       the document's LTR and hugging the wrong edge. */
+    const t = document.createElement("div"); t.className = "b-title"; t.dir = "auto"; t.textContent = b.title; open.appendChild(t);
+    const a = document.createElement("div"); a.className = "b-author"; a.dir = "auto"; a.textContent = b.author || "Unknown author"; open.appendChild(a);
 
     const prog = document.createElement("div"); prog.className = "b-progress";
     const fill = document.createElement("i");
@@ -1874,13 +1969,21 @@ bookFile.addEventListener("change", async () => {
   const viewAtStart = activeView;
   try {
     let parsed;
-    try { parsed = parseEpub(await f.arrayBuffer()); }
+    try {
+      /* before arrayBuffer() copies the whole file into the heap — the throw lands in
+         the catch below and reuses all of its view/focus/banner bookkeeping */
+      if (f.size > MAX_EPUB_BYTES) throw new Error("EPUB too large");
+      parsed = parseEpub(await f.arrayBuffer());
+    }
     catch (err) {
       console.error(err);
+      const msg = String(err && err.message);
       if (activeView === viewAtStart)
-        showBanner(String(err && err.message).includes("DRM")
+        showBanner(msg.includes("DRM")
           ? `<b>This EPUB is DRM-protected.</b> Lantern can only read DRM-free books.`
-          : `<b>Couldn't open that EPUB.</b> The file may be corrupted or in a format Lantern doesn't understand.`, { error: true });
+          : msg.includes("too large")
+            ? `<b>That EPUB is too large.</b> Lantern can only open books up to ${MAX_EPUB_BYTES / 1048576} MB.`
+            : `<b>Couldn't open that EPUB.</b> The file may be corrupted or in a format Lantern doesn't understand.`, { error: true });
       return;
     }
     const id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(36).slice(2));
@@ -1948,6 +2051,16 @@ function readerStopPlayback() {
   rd.holdScrollSi = -1; /* a torn-down run must never suppress a later run's follow-along */
 }
 
+/* terminal parks (end of book, synthesis failure, silent book) stop for good —
+   release the frame loop and the audio session instead of spinning a 60 fps tick
+   over drained timings against a still-running context. Call AFTER rd.started is
+   cleared so ctx.onstatechange bails; the next readerToggle/readerSkip goes
+   through readerPlayFrom, which cancels/re-arms the loop and resumes the context. */
+function readerParkAudio() {
+  cancelAnimationFrame(rd.raf); rd.raf = 0;
+  if (rd.ctx && rd.ctx.state === "running") { try { rd.ctx.suspend(); } catch {} }
+}
+
 function readerTeardown() {
   if (!rd.book) return;
   saveReaderProgress();
@@ -2004,6 +2117,9 @@ function updateReaderStatus(extra) {
 
 function renderChapter() {
   const ch = rd.book.chapters[rd.ch];
+  /* book text, so dir="auto" — .r-titles is text-align:center, so only glyph
+     ordering and which side the ellipsis lands on change */
+  rBook.dir = "auto"; rChapter.dir = "auto";
   rBook.textContent = rd.book.title;
   rChapter.textContent = ch.title;
   rd.sentences = [];
@@ -2014,6 +2130,11 @@ function renderChapter() {
     /* a block matching the chapter label is its in-content heading — style it as one,
        but keep it as spoken sentences so the title is read aloud too */
     const p = document.createElement(para === ch.title ? "h2" : "p");
+    /* per-paragraph, not one dir on #rContent: the block element is the bidi-paragraph
+       unit, so a book that mixes RTL prose with LTR front matter resolves each block on
+       its own. NOT on the .sent spans — that would isolate every sentence and break
+       neutral resolution across sentence boundaries. */
+    p.dir = "auto";
     for (const s of splitSentences(para)) {
       const span = document.createElement("span");
       span.className = "sent";
@@ -2281,6 +2402,7 @@ async function readerPlayFrom(si, { scroll = true } = {}) {
     finished = true;
     if (genFailed) {
       rd.playing = false; rd.started = false;
+      readerParkAudio();
       setReaderIcon("play");
       /* the banner is the only other trace of this park, and the very actions that
          fix the failure clear it (setEngine / commitQwenUrl / setVoice → clearErrorBanner),
@@ -2299,6 +2421,7 @@ async function readerPlayFrom(si, { scroll = true } = {}) {
       rd.emptyRun++;
       if (rd.emptyRun >= Math.min(3, rd.book.chapters.length)) {
         rd.playing = false; rd.started = false;
+        readerParkAudio();
         setReaderIcon("play");
         showBanner(`<b>This book isn't producing any audio.</b> The chapters may be empty, or the voice engine is returning silence.`, { error: true });
         updateReaderStatus("tap play to retry");
@@ -2311,6 +2434,7 @@ async function readerPlayFrom(si, { scroll = true } = {}) {
        than auto-advancing, which would resume audio the user explicitly stopped */
     if (rd.ctx && rd.ctx.state !== "running") {
       rd.playing = false; rd.started = false;
+      readerParkAudio(); /* the ctx is already suspended here — this is for the rAF loop */
       setReaderIcon("play");
       updateReaderStatus("tap play to continue");
       if (audioEl) audioEl.pause();
@@ -2344,6 +2468,7 @@ function readerChapterDone() {
   } else {
     rd.playing = false;
     rd.started = false; /* so the next play tap starts a fresh run instead of toggling a drained context */
+    readerParkAudio();
     rd.si = rd.sentences.length; /* counts as 100% on the shelf */
     setReaderIcon("play");
     updateReaderStatus("the end");
@@ -2433,6 +2558,7 @@ function readerSettingsChanged() {
   if (rd.playing) readerPlayFrom(rd.si);
   else { /* park: the old voice is already scheduled — resume restarts with the new one */
     readerStopPlayback(); rd.started = false;
+    readerParkAudio(); /* nothing is scheduled any more — don't leave the tick loop spinning */
     /* the run being torn down can still be wearing the busy pulse: an interruption
        during the engine warm-up sets rd.playing = false, and ctx.onstatechange
        deliberately leaves the icon alone while "working" is set, trusting
@@ -2555,6 +2681,7 @@ function buildToc() {
   tocList.innerHTML = "";
   rd.book.chapters.forEach((c, i) => {
     const b = document.createElement("button");
+    b.dir = "auto"; /* book text — let an RTL chapter label set its own base direction */
     b.textContent = c.title;
     if (i === rd.ch) { b.classList.add("current"); b.setAttribute("aria-current", "true"); }
     b.addEventListener("click", () => {
@@ -2567,7 +2694,19 @@ function buildToc() {
       rScroll.scrollTop = 0;
       saveReaderProgress();
       if (wasPlaying) readerPlayFrom(0);
-      else { rd.started = false; setReaderIcon("play"); updateReaderStatus("tap play to listen"); }
+      else {
+        rd.started = false; setReaderIcon("play");
+        /* a chapter that was never attempted must not be captioned by the previous
+           chapter's failure: readerStopPlayback just cleared rd.genFailed and si is 0
+           here, so "Tap play to try again" no longer describes what play does — and in
+           the reader the banner is fixed over the first lines of the new chapter with no
+           dismiss control. The wasPlaying branch reaches readerPlayFrom's own clear;
+           this one reaches nothing. A qwen hold is exempt as everywhere else: it reports
+           on no attempt, and browsing chapters answers nothing.
+           BEFORE updateReaderStatus — hideBanner flushes the announce queue. */
+        if (!bannerIsQwenHold()) clearErrorBanner();
+        updateReaderStatus("tap play to listen");
+      }
     });
     tocList.appendChild(b);
   });

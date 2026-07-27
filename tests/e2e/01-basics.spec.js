@@ -195,4 +195,122 @@ test.describe("basics and happy path", () => {
     await expect.poll(async () => (await meta()).title, { timeout: 15_000 }).toContain("Zulu");
     expect((await meta()).artist).toBe("George");
   });
+  /* excerpt() caps by UTF-16 code units. A cut that lands between a base letter and
+     its combining mark drops the accent instead of truncating the letter, so the
+     "now reading" line (and the exported WAV's title) shows a misspelling. */
+  test("the now-reading excerpt never truncates an accent off its last letter", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 40, chunkSeconds: 0.2 });
+    await page.goto("/#paste");
+    await startRead(page, "a".repeat(59) + "e\u0301" + " tail words here"); // NFD: base + combining acute
+    const shown = await page.locator("#nowReading").textContent();
+    expect(shown).toBe("a".repeat(59) + "…"); // retreated past the whole cluster
+    expect(shown.endsWith("e…")).toBe(false); // never a de-accented "e"
+  });
+
+  test("leaving the paste view releases the lock-screen transport completely", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 1.0 });
+    await page.goto("/#paste");
+    await startRead(page);
+    await expect
+      .poll(() => page.evaluate(() => (navigator.mediaSession.metadata && navigator.mediaSession.metadata.title || "").length), { timeout: 15_000 })
+      .toBeGreaterThan(0);
+
+    await page.click("#pasteBackBtn"); // the session is GONE, not parked
+    await expect(page.locator("#addBookBtn")).toBeVisible();
+    // a title left standing keeps the OS Now Playing panel announcing an abandoned
+    // reading — through a route change, and through opening a different book
+    expect(await page.evaluate(() => navigator.mediaSession.metadata !== null)).toBe(false);
+  });
+
+  /* bannerFill carries an INLINE width that outranks the stylesheet's 0%, and only the
+     live progress_callback ever writes it — so a retry re-opens the bar at the abandoned
+     attempt's percentage and then visibly rewinds on its first real tick. */
+  test("a retried model download reopens its progress bar at zero", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 150, loadFail: true, progressSteps: 3, chunkDelay: 30, chunkSeconds: 0.3 });
+    await page.goto("/#paste");
+    await startRead(page);
+    await expect(page.locator("#bannerText")).toContainText("Couldn't fetch the voice model", { timeout: 20_000 });
+    const stale = await page.evaluate(() => document.getElementById("bannerFill").style.width);
+    expect(stale).not.toBe("0%"); // the abandoned attempt left its last percentage behind
+
+    // a genuinely new attempt, slow enough to observe before its first progress tick
+    await page.evaluate(() => { window.__TTS_MOCK__.loadFail = false; window.__TTS_MOCK__.loadDelay = 9000; });
+    await page.click("#readBtn");
+    await expect(page.locator("#bannerBar")).toBeVisible({ timeout: 10_000 });
+    expect(await page.evaluate(() => document.getElementById("bannerFill").style.width)).toBe("0%");
+  });
+
+  /* The reader drains played-out source nodes because a node still referenced from JS
+     pins its whole AudioBuffer; the paste loop kept every one, holding the reading's
+     PCM a second time on top of the copy `chunks` keeps for the WAV export. `sources`
+     is module-private, so the drain is observed through switchToFile's stop-all loop:
+     it stops exactly what `sources` still holds. */
+  test("the paste session releases the audio it has already played", async ({ page, mockTTS }) => {
+    await page.addInitScript(() => {
+      window.__SRC_MADE = 0;
+      window.__SRC_STOPPED = 0;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      const make = AC.prototype.createBufferSource;
+      AC.prototype.createBufferSource = function () {
+        const n = make.call(this);
+        window.__SRC_MADE++;
+        const stop = n.stop.bind(n);
+        let counted = false;
+        n.stop = function (...a) {
+          if (!counted) { counted = true; window.__SRC_STOPPED++; }
+          return stop(...a);
+        };
+        return n;
+      };
+    });
+    // generation slower than playback, so most nodes are long finished by the end
+    await mockTTS({ loadDelay: 20, chunkDelay: 220, chunkSeconds: 0.08 });
+    await page.goto("/#paste");
+    const text = Array.from({ length: 18 }, (_, i) => `Sentence number ${i + 1} here.`).join(" ");
+    await startRead(page, text);
+    await waitForFileMode(page, 60_000);
+
+    const seen = await page.evaluate(() => ({ made: window.__SRC_MADE, stopped: window.__SRC_STOPPED }));
+    expect(seen.made).toBe(18); // every sentence was scheduled — nothing was skipped
+    expect(seen.stopped).toBeLessThan(seen.made); // …but the played ones were let go
+    // and the WAV export still has the whole reading
+    await expect(page.locator("#saveBtn")).toBeEnabled();
+  });
+
+  test("the voice and speed chosen in the paste view reach the engine", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 30, chunkSeconds: 0.3 });
+    await page.goto("/#paste");
+    await page.selectOption("#voice", "bm_fable");
+    await page.click('#speeds button[data-s="1.5"]');
+    await startRead(page);
+    await waitForFileMode(page);
+    const args = await page.evaluate(() => window.__TTS_GEN_ARGS || []);
+    expect(args.length).toBeGreaterThan(0);
+    expect(args.every((a) => a.voice === "bm_fable" && a.speed === 1.5)).toBe(true);
+  });
+
+  /* sentenceAudioStream snapshots the voice on its first next(): a change made while
+     synthesis is running must not put half the passage — and half the saved WAV — in
+     a different voice. */
+  test("changing the voice mid-reading does not switch voices halfway through", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 250, chunkSeconds: 0.2 });
+    await page.goto("/#paste");
+    const starting = await page.locator("#voice").inputValue();
+    expect(starting).not.toBe("bm_fable");
+    await startRead(page, "One here. Two here. Three here. Four here. Five here. Six here.");
+    await expect.poll(() => page.evaluate(() => (window.__TTS_GEN_ARGS || []).length), { timeout: 15_000 }).toBeGreaterThan(0);
+    await page.selectOption("#voice", "bm_fable");
+    await waitForFileMode(page, 40_000);
+
+    const args = await page.evaluate(() => window.__TTS_GEN_ARGS);
+    expect(args.length).toBeGreaterThan(2);
+    expect(args.every((a) => a.voice === starting)).toBe(true);
+    // …and the NEXT reading uses the new voice
+    await page.evaluate(() => { window.__TTS_GEN_ARGS = []; });
+    await startRead(page, "A brand new reading now.");
+    await waitForFileMode(page, 40_000);
+    const after = await page.evaluate(() => window.__TTS_GEN_ARGS);
+    expect(after.length).toBeGreaterThan(0);
+    expect(after.every((a) => a.voice === "bm_fable")).toBe(true);
+  });
 });

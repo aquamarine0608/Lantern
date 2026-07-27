@@ -13,6 +13,14 @@
      chunkSeconds   seconds of audio per sentence (default 0.5)
      streamFailAfter throw after N chunks yielded; -1 = never (default -1)
      emptyChunkAt   yield a zero-length Float32Array for chunk N; -1 = never (default -1)
+   Observability the specs read back off `window`:
+     window.__TTS_GEN_TEXTS  array of the text of every generate() call
+     window.__TTS_GEN_ARGS   array of { text, voice, speed } for every generate() call
+                             — the kokoro counterpart of the qwen mock's request log.
+                             The synthesized audio stays voice/speed-INVARIANT on
+                             purpose: deriving its length from `speed` would perturb
+                             the timing-sensitive 03-abort-errors / 07-reader-tts specs
+                             for no extra coverage.
 */
 
 const CFG = () =>
@@ -78,6 +86,7 @@ export class KokoroTTS {
     const cfg = CFG();
     const i = (globalThis.__TTS_GEN = (globalThis.__TTS_GEN || 0) + 1) - 1;
     (globalThis.__TTS_GEN_TEXTS = globalThis.__TTS_GEN_TEXTS || []).push(text);
+    (globalThis.__TTS_GEN_ARGS = globalThis.__TTS_GEN_ARGS || []).push({ text, voice, speed });
     await sleep(cfg.chunkDelay);
     if (cfg.streamFailAfter >= 0 && i >= cfg.streamFailAfter) throw new Error("mock: synthesis failed");
     const n = i === cfg.emptyChunkAt ? 0 : Math.round(24000 * cfg.chunkSeconds);

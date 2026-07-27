@@ -1,7 +1,8 @@
 const { test, expect, startRead, waitForFileMode } = require("../helpers/fixtures");
 
 test.describe("persistence across refreshes", () => {
-  test("text, voice and speed survive a reload", async ({ page }) => {
+  test("text, voice and speed survive a reload", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 30, chunkSeconds: 0.3 }); // addInitScript survives the reload
     await page.goto("/#paste");
     await page.fill("#text", "Remember me after the refresh.");
     await page.selectOption("#voice", "bm_fable");
@@ -13,6 +14,14 @@ test.describe("persistence across refreshes", () => {
     await expect(page.locator("#count")).toHaveText("5 words");
     await expect(page.locator("#voice")).toHaveValue("bm_fable");
     await expect(page.locator('#speeds button[data-s="1.5"]')).toHaveClass(/on/);
+
+    // …and the restored selection is what the engine is actually asked for: matching
+    // controls prove nothing if the values never reach tts.generate()
+    await startRead(page);
+    await waitForFileMode(page);
+    const args = await page.evaluate(() => window.__TTS_GEN_ARGS || []);
+    expect(args.length).toBeGreaterThan(0);
+    expect(args.every((a) => a.voice === "bm_fable" && a.speed === 1.5)).toBe(true);
   });
 
   test("text typed right before a refresh is not lost", async ({ page }) => {

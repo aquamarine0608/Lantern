@@ -1,4 +1,4 @@
-const { test, expect } = require("../helpers/fixtures");
+const { test, expect, startRead } = require("../helpers/fixtures");
 const { importEpub } = require("../helpers/epub");
 
 test.describe("accessibility and input", () => {
@@ -365,5 +365,43 @@ test.describe("accessibility and input", () => {
     await expect
       .poll(() => page.evaluate(() => document.activeElement && document.activeElement.id), { timeout: 5_000 })
       .toBe("addBookBtn");
+  });
+  /* Contrast is computed from the RENDERED pair, not from the hex literals: a later
+     palette edit that reintroduces the failure has to fail here too. */
+  function wcagRatio(fg, bg) {
+    const lin = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    const lum = (c) => 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+    const a = lum(fg), b = lum(bg);
+    const [hi, lo] = a > b ? [a, b] : [b, a];
+    return (hi + 0.05) / (lo + 0.05);
+  }
+
+  test("the Stop reading label clears WCAG AA against its ember fill", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 400, chunkDelay: 200, chunkSeconds: 0.4 });
+    await page.goto("/#paste");
+    await startRead(page);
+    await expect(page.locator("#readBtn")).toHaveText("Stop reading");
+    const pair = await page.evaluate(() => {
+      const nums = (s) => (s.match(/[0-9.]+/g) || []).map(Number).slice(0, 3);
+      const cs = getComputedStyle(document.getElementById("readBtn"));
+      return { fg: nums(cs.color), bg: nums(cs.backgroundColor) };
+    });
+    // 17px/600 is not "large text", so the 3:1 tier does not apply — 4.5:1 is the floor
+    expect(wcagRatio(pair.fg, pair.bg)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test("the footer caption clears WCAG AA at its declared opacity", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("#appFooter")).toBeVisible();
+    // the footer has no background of its own: the rendered colour is its --mist
+    // composited over the body at the declared opacity, and THAT is what must clear AA
+    const pair = await page.evaluate(() => {
+      const nums = (s) => (s.match(/[0-9.]+/g) || []).map(Number).slice(0, 3);
+      const cs = getComputedStyle(document.getElementById("appFooter"));
+      const bg = nums(getComputedStyle(document.body).backgroundColor);
+      const a = parseFloat(cs.opacity);
+      return { fg: nums(cs.color).map((v, i) => v * a + bg[i] * (1 - a)), bg };
+    });
+    expect(wcagRatio(pair.fg, pair.bg)).toBeGreaterThanOrEqual(4.5);
   });
 });

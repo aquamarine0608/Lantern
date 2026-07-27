@@ -29,7 +29,7 @@ const xhtml = (title, paras, divs = false) => `<?xml version="1.0" encoding="utf
   : `<h2>${title}</h2>\n${paras.map((p) => `<p>${p}</p>`).join("\n")}`}
 </body></html>`;
 
-function makeEpub({ title = "The Test Book", author = "Ada Author", creators, chapters = DEFAULT_CHAPTERS, cover = true, divs = false, encryption, subEntries = false } = {}) {
+function makeEpub({ title = "The Test Book", author = "Ada Author", creators, chapters = DEFAULT_CHAPTERS, cover = true, divs = false, encryption, subEntries = false, orphanItem = false } = {}) {
   const files = {};
   const manifest = [];
   const spine = [];
@@ -38,6 +38,15 @@ function makeEpub({ title = "The Test Book", author = "Ada Author", creators, ch
     manifest.push(`<item id="c${i + 1}" href="ch${i + 1}.xhtml" media-type="application/xhtml+xml"/>`);
     spine.push(`<itemref idref="c${i + 1}"/>`);
   });
+  /* A malformed package document: one manifest <item> with no id (spec-required)
+     and one spine <itemref> with no idref (also spec-required). Both getAttribute
+     calls return null, so a Map keyed by the raw attribute makes them collide and
+     the unreferenced file resolves as a real chapter. */
+  if (orphanItem) {
+    files["OEBPS/secret.xhtml"] = strToU8(xhtml("Secret", ["This file is not in the reading order at all."]));
+    manifest.push('<item href="secret.xhtml" media-type="application/xhtml+xml"/>');
+    spine.push("<itemref/>");
+  }
   if (encryption) {
     files["META-INF/encryption.xml"] = strToU8(`<?xml version="1.0"?>
 <encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
@@ -129,6 +138,25 @@ ${chapters.map((c, i) => `    <item id="c${i + 1}" href="${hrefs[i]}" media-type
   return Buffer.from(zip);
 }
 
+/* A "zip bomb" the test process can actually hold: a normal small EPUB whose
+   CENTRAL DIRECTORY lies about one entry's uncompressed size. fflate reads
+   originalSize from the central directory and hands it to the `filter` callback
+   BEFORE allocating the buffer for that entry, which is exactly where parseEpub's
+   inflate budget lives — so the lie is never called (nothing is inflated) and the
+   fixture stays a few KB on disk while declaring half a gigabyte. */
+function makeZipBomb(declaredBytes = 512 * 1024 * 1024) {
+  const buf = makeEpub({ cover: false });
+  const target = "OEBPS/ch1.xhtml";
+  for (let i = 0; i + 46 <= buf.length; i++) {
+    if (buf.readUInt32LE(i) !== 0x02014b50) continue; /* central directory file header */
+    const nameLen = buf.readUInt16LE(i + 28);
+    if (buf.toString("latin1", i + 46, i + 46 + nameLen) !== target) continue;
+    buf.writeUInt32LE(declaredBytes, i + 24); /* uncompressed size */
+    return buf;
+  }
+  throw new Error(`makeZipBomb: no central directory record for ${target}`);
+}
+
 async function importEpub(page, opts) {
   await page.setInputFiles("#bookFile", {
     name: (opts && opts.name) || "test.epub",
@@ -137,4 +165,4 @@ async function importEpub(page, opts) {
   });
 }
 
-module.exports = { makeEpub, makeEpub2, importEpub, DEFAULT_CHAPTERS };
+module.exports = { makeEpub, makeEpub2, makeZipBomb, importEpub, DEFAULT_CHAPTERS };

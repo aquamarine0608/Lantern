@@ -287,4 +287,73 @@ test.describe("reader view", () => {
     await expect(page.locator(".sent").nth(2)).toHaveText(/^Dr\. Watson reached No\. 10 at 8 a\.m\. the next morning\.\s*$/);
     await expect(page.locator(".sent").nth(3)).toHaveText(/^We arrived late\.\s*$/);
   });
+  /* .r-scroll declares only overflow-y, which per CSS Overflow promotes overflow-x to
+     auto as well: without a wrap opportunity a single over-long token doesn't reflow,
+     it rides off the right edge with no ellipsis and (on iOS overlay scrollbars) no
+     hint that anything is hidden. block:"center" scrollIntoView is vertical only. */
+  test("an unbreakable token wraps instead of clipping off the reading column", async ({ page }) => {
+    await page.goto("/");
+    await importEpub(page, {
+      cover: false,
+      chapters: [{ title: "Long Tokens", paras: ["See https://example.com/" + "x".repeat(99) + " and the sentence carries on afterwards."] }],
+    });
+    await page.click(".book");
+    await expect(page.locator(".sent").first()).toBeVisible();
+    const over = await page.evaluate(() => {
+      const rs = document.getElementById("rScroll");
+      return rs.scrollWidth - rs.clientWidth;
+    });
+    expect(over).toBe(0);
+  });
+
+  test("an RTL book resolves its own direction on the shelf, in the chapter list and in the reading pane", async ({ page }) => {
+    await page.goto("/");
+    await importEpub(page, {
+      title: "ספר הבדיקה",
+      author: "מחבר עברי",
+      cover: false,
+      chapters: [
+        { title: "פרק ראשון", paras: ["זהו המשפט הראשון בספר. וזהו המשפט השני שלו."] },
+        { title: "פרק שני", paras: ["המשך הסיפור מופיע כאן."] },
+      ],
+    });
+    const dirOf = (sel) => page.locator(sel).first().evaluate((el) => getComputedStyle(el).direction);
+    expect(await dirOf(".b-title")).toBe("rtl");
+    expect(await dirOf(".b-author")).toBe("rtl");
+    // and the physical alignment is gone, so "start" follows the resolved direction
+    expect(await page.locator(".book-open").first().evaluate((el) => getComputedStyle(el).textAlign)).toBe("start");
+
+    await page.click(".book");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    expect(await dirOf("#rContent p")).toBe("rtl");
+    expect(await dirOf("#rBook")).toBe("rtl");
+    expect(await dirOf("#rChapter")).toBe("rtl");
+    // the sentence spans stay inside their paragraph's single bidi run
+    expect(await page.locator(".sent").first().evaluate((el) => el.hasAttribute("dir"))).toBe(false);
+
+    await page.click("#tocBtn");
+    expect(await dirOf("#tocList button")).toBe("rtl");
+    expect(await page.locator("#tocList button").first().evaluate((el) => getComputedStyle(el).textAlign)).toBe("start");
+  });
+
+  /* A missing id and a missing idref are both spec violations that getAttribute
+     reports as the SAME null, so a Map keyed on the raw value makes them meet: the
+     bare <itemref/> resolves to the last id-less <item> and reads out a file that is
+     in no reading order at all. */
+  test("a spine itemref with no idref cannot pull in a manifest item with no id", async ({ page }) => {
+    await page.goto("/");
+    await importEpub(page, { orphanItem: true, cover: false });
+    await page.click(".book");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await page.click("#tocBtn");
+    await expect(page.locator("#tocList button")).toHaveCount(3);
+    expect(await page.locator("#tocList button").allTextContents())
+      .toEqual(["Chapter One", "Chapter Two", "Chapter Three"]);
+    // and the unreferenced file's text is nowhere in the book
+    for (let i = 0; i < 3; i++) {
+      await page.locator("#tocList button").nth(i).click();
+      await expect(page.locator("#rContent")).not.toContainText("not in the reading order");
+      if (i < 2) await page.click("#tocBtn");
+    }
+  });
 });

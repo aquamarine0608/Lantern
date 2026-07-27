@@ -161,7 +161,10 @@ function startQwenServer(state) {
     if (ctlUrl.pathname === "/__control") {
       if (ctlUrl.searchParams.has("offline")) state.qwenOffline = ctlUrl.searchParams.get("offline") === "1";
       if (ctlUrl.searchParams.has("hang")) state.qwenHang = ctlUrl.searchParams.get("hang") === "1";
-      if (ctlUrl.searchParams.has("fail")) state.qwenFail = ctlUrl.searchParams.get("fail") === "1";
+      /* a STATUS CODE, not a boolean: the app's qwenErrorHtml distinguishes 401/403
+         (bad key) and 404 (wrong path) from the generic "reported an error (n)".
+         0 = off; the legacy `fail=1` call sites are normalised to 500 in net.js. */
+      if (ctlUrl.searchParams.has("fail")) state.qwenFail = parseInt(ctlUrl.searchParams.get("fail"), 10) || 0;
       if (ctlUrl.searchParams.has("rate")) state.qwenRate = parseInt(ctlUrl.searchParams.get("rate"), 10) || 22050;
       if (ctlUrl.searchParams.has("delay")) state.qwenDelay = parseInt(ctlUrl.searchParams.get("delay"), 10) || 0;
       res.writeHead(200, { "content-type": "application/json" });
@@ -187,7 +190,7 @@ function startQwenServer(state) {
         state.qwenRequests.push(payload);
         if (state.qwenHang) return; /* accept the request, never answer — a black-holed server */
         if (state.qwenFail) {
-          res.writeHead(500, { ...cors, "content-type": "application/json" });
+          res.writeHead(state.qwenFail, { ...cors, "content-type": "application/json" });
           res.end(JSON.stringify({ error: "mock server failure" }));
           return;
         }

@@ -1,5 +1,5 @@
 const { test, expect } = require("../helpers/fixtures");
-const { importEpub, makeEpub, makeEpub2 } = require("../helpers/epub");
+const { importEpub, makeEpub, makeEpub2, makeZipBomb } = require("../helpers/epub");
 
 test.describe("library", () => {
   test("the library is the default view, with paste mode one tap away and back", async ({ page }) => {
@@ -288,5 +288,29 @@ test.describe("library", () => {
     await page.click("#pasteBackBtn");
     await expect(page.locator("#libEmpty")).toContainText("Your shelf is empty");
     await expect(page.locator("#libEmpty")).not.toContainText("Private browsing");
+  });
+  /* unzipSync inflates every member eagerly, allocating exactly the size the central
+     directory declares — so an archive that declares gigabytes jetsams the tab before
+     the surrounding catch can ever run. The budget must refuse it instead. */
+  test("an EPUB whose entries declare more than the inflate budget is refused, not inflated", async ({ page }) => {
+    await page.goto("/");
+    await importEpub(page, makeZipBomb());
+    await expect(page.locator("#bannerText")).toContainText("That EPUB is too large", { timeout: 15_000 });
+    await expect(page.locator("#bannerText")).toContainText("128 MB");
+    await expect(page.locator(".book")).toHaveCount(0);
+    await expect(page.locator("#libEmpty")).toBeVisible();
+    // the app is still usable afterwards — the refusal is a normal import failure
+    await importEpub(page);
+    await expect(page.locator(".book .b-title")).toHaveText("The Test Book");
+  });
+
+  test("the fallback cover initial keeps the accent of a decomposed-Unicode title", async ({ page }) => {
+    await page.goto("/");
+    // NFD: the accent is its own code point AFTER the base letter, so taking the first
+    // CODE POINT shows a bare "U" on a 36px tile
+    await importEpub(page, { title: "Ừng dụng".normalize("NFD"), cover: false });
+    const ini = page.locator(".book .cover .initials");
+    await expect(ini).toBeVisible();
+    expect((await ini.textContent()).normalize("NFC")).toBe("ỪD");
   });
 });

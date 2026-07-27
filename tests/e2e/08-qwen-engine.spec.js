@@ -49,6 +49,44 @@ test.describe("Qwen3-TTS server engine", () => {
     await expect(page.locator("#player")).toBeHidden();
   });
 
+  /* qwenErrorHtml has three distinct status branches; only the generic one above was
+     reachable from the harness, so a swapped or broken 401/403/404 comparison shipped
+     with zero red tests in the file that exists to cover exactly this. */
+  test("a 401 from the server blames the API key, not the address", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await enableQwen(page);
+    await setQwenFail(401);
+    await page.click("#pasteModeBtn");
+    await startRead(page);
+    await expect(page.locator("#bannerText")).toContainText("rejected the API key (401)", { timeout: 15_000 });
+    await expect(page.locator("#bannerText")).not.toContainText("reported an error");
+    await expect(page.locator("#bannerText")).toContainText("the address itself is working");
+  });
+
+  test("a 403 takes the same API-key branch as a 401", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await enableQwen(page);
+    await setQwenFail(403);
+    await page.click("#pasteModeBtn");
+    await startRead(page);
+    await expect(page.locator("#bannerText")).toContainText("rejected the API key (403)", { timeout: 15_000 });
+    await expect(page.locator("#bannerText")).not.toContainText("reported an error");
+  });
+
+  test("a 404 points at the endpoint path", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/");
+    await enableQwen(page);
+    await setQwenFail(404);
+    await page.click("#pasteModeBtn");
+    await startRead(page);
+    await expect(page.locator("#bannerText")).toContainText("/v1/audio/speech", { timeout: 15_000 });
+    await expect(page.locator("#bannerText")).toContainText("Check the address path");
+    await expect(page.locator("#bannerText")).not.toContainText("rejected the API key");
+  });
+
   test("a suspend mid-edit never overwrites the committed server address", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.goto("/");
@@ -1746,5 +1784,32 @@ test.describe("Qwen3-TTS server engine", () => {
     await expect(page.locator("#bannerText")).toContainText("voice and API key");
     await expect(page.locator("#bannerText")).toContainText("typed for a different server address");
     await expect(page.locator("#bannerText")).toContainText("put that other address back");
+  });
+  /* The TOC-jump clear is exempt for a hold, as everywhere else: a hold reports on no
+     attempt at all, and browsing chapters answers nothing it asks. */
+  test("a standing 'Not saved yet' hold survives a TOC chapter jump", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "https://new-box.example", v: "", k: "" }));
+    }, QWEN_URL);
+    await page.goto("/");
+    await importEpub(page);
+    await page.click(".book");
+    await expect(page.locator("#viewReader")).toBeVisible();
+
+    await page.click("#fontBtn");
+    await page.fill("#qwenKey", "sk-new-box");
+    await page.locator("#qwenKey").blur();
+    await expect(page.locator("#bannerText")).toContainText("Not saved yet");
+    await page.click(".sheet:not([hidden]) .sheet-done");
+
+    await page.click("#tocBtn");
+    await page.locator("#tocList button").nth(2).click();
+    await expect(page.locator("#rChapter")).toHaveText("Chapter Three");
+    await expect(page.locator("#banner")).toBeVisible();
+    await expect(page.locator("#bannerText")).toContainText("Not saved yet");
   });
 });

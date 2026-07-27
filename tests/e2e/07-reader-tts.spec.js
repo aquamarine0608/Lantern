@@ -747,4 +747,68 @@ test.describe("reading books aloud", () => {
     await expect(page.locator("#banner")).toBeHidden();
     await expect(page.locator("#rStatus")).toContainText("Chapter 1 of 3");
   });
+  /* The codebase's own invariant: "an error reports on ONE attempt, in ONE view, under
+     ONE engine — and the banner has no dismiss control, so anything that invalidates it
+     must clear it." The TOC jump's parked branch changes the reader's subject to a
+     chapter that was never attempted without going through readerPlayFrom's own clear. */
+  test("jumping to a never-attempted chapter clears the previous chapter's failure banner", async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS, { streamFailAfter: 0 });
+    await page.click("#rPlay");
+    await expect(page.locator("#bannerText")).toContainText("Something went wrong", { timeout: 15_000 });
+    await expect(page.locator("#rStatus")).toContainText("tap play to retry", { timeout: 15_000 });
+
+    await page.click("#tocBtn");
+    await page.locator("#tocList button").nth(2).click();
+    await expect(page.locator("#rChapter")).toHaveText("Chapter Three");
+    await expect(page.locator("#banner")).toBeHidden();
+    await expect(page.locator("#rStatus")).toContainText("tap play to listen");
+    // the clear lands BEFORE the status update, so the announcement is not swallowed
+    await expect
+      .poll(() => page.evaluate(() => document.getElementById("a11yAlert").textContent), { timeout: 5_000 })
+      .toContain("tap play to listen");
+  });
+
+  /* readerTick() re-arms requestAnimationFrame unconditionally and nothing in the
+     terminal parks cancels it or suspends the context, so a finished book leaves a
+     60 fps loop and a live audio session running over drained timings forever. */
+  test("the end-of-book park releases the audio context and the frame loop", async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS);
+    await page.click("#tocBtn");
+    await page.locator("#tocList button").nth(2).click();
+    await page.click('.sent[data-si="3"]');
+    await expect(page.locator("#rStatus")).toContainText("the end", { timeout: 15_000 });
+
+    await expect
+      .poll(() => page.evaluate(() => window.__CTXS[window.__CTXS.length - 1].state), { timeout: 5_000 })
+      .toBe("suspended");
+    const frames = await page.evaluate(async () => {
+      let n = 0;
+      const orig = window.requestAnimationFrame;
+      window.requestAnimationFrame = (cb) => { n++; return orig.call(window, cb); };
+      await new Promise((r) => setTimeout(r, 600));
+      window.requestAnimationFrame = orig;
+      return n;
+    });
+    expect(frames).toBeLessThan(5); // a spinning readerTick would re-arm ~36 times in 600 ms
+
+    // and the park is still only a park: play restarts the book
+    await page.click("#rPlay");
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(0);
+  });
+
+  test("the voice and speed chosen in the reader settings reach the engine", async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS, { chunkSeconds: 0.4 });
+    await page.click("#fontBtn");
+    await page.selectOption("#rVoice", "bm_fable");
+    await page.click('#rSpeeds button[data-s="0.8"]');
+    await page.click(".sheet:not([hidden]) .sheet-done");
+
+    await page.evaluate(() => { window.__TTS_GEN_ARGS = []; });
+    await page.click("#rPlay");
+    await expect
+      .poll(() => page.evaluate(() => (window.__TTS_GEN_ARGS || []).length), { timeout: 15_000 })
+      .toBeGreaterThan(1);
+    const args = await page.evaluate(() => window.__TTS_GEN_ARGS);
+    expect(args.every((a) => a.voice === "bm_fable" && a.speed === 0.8)).toBe(true);
+  });
 });

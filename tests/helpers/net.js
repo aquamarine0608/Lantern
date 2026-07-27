@@ -35,7 +35,8 @@ function qwenControl(query) {
   });
 }
 const setQwenHang = (hang) => qwenControl(`hang=${hang ? 1 : 0}`);
-const setQwenFail = (fail) => qwenControl(`fail=${fail ? 1 : 0}`);
+/* accepts true (legacy = 500), false (off), or an explicit status code (401/403/404/…) */
+const setQwenFail = (fail) => qwenControl(`fail=${fail === true ? 500 : Number(fail) || 0}`);
 const setQwenRate = (rate) => qwenControl(`rate=${rate}`);
 const setQwenDelay = (ms) => qwenControl(`delay=${ms}`);
 
