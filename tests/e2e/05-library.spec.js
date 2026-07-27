@@ -54,6 +54,40 @@ test.describe("library", () => {
     await expect(page.locator(".book")).toHaveCount(0);
   });
 
+  test("tapping a book that is gone from storage refreshes the shelf instead of dying silently", async ({ page }) => {
+    await page.goto("/");
+    await importEpub(page);
+    await expect(page.locator(".book")).toHaveCount(1);
+    const id = await page.locator(".book").getAttribute("data-id");
+
+    // a second tab/window of the same PWA removed the record since this shelf rendered
+    await page.evaluate(
+      (bookId) =>
+        new Promise((res, rej) => {
+          const open = indexedDB.open("lantern-books", 1);
+          open.onsuccess = () => {
+            const db = open.result;
+            const tx = db.transaction("books", "readwrite");
+            tx.objectStore("books").delete(bookId);
+            tx.oncomplete = () => { db.close(); res(); };
+            tx.onerror = () => { db.close(); rej(tx.error); };
+          };
+          open.onerror = () => rej(open.error);
+        }),
+      id
+    );
+
+    // the bounce to #library lands on the view we are already on, so showView
+    // early-returns: the shelf must be refreshed here or the ghost card lives forever
+    await page.click(".book-open");
+    await expect(page.locator(".book")).toHaveCount(0);
+    await expect(page.locator("#libEmpty")).toBeVisible();
+    await expect(page.locator("#viewLibrary")).toHaveClass(/active/);
+    await expect
+      .poll(() => page.evaluate(() => document.getElementById("a11yAlert").textContent), { timeout: 5_000 })
+      .toContain("no longer on this shelf");
+  });
+
   test("an EPUB 2 book (NCX toc, meta cover, subdirs, encoded hrefs) imports and reads correctly", async ({ page }) => {
     await page.goto("/");
     await page.setInputFiles("#bookFile", {

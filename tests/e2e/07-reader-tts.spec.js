@@ -7,6 +7,23 @@ const speakingSi = async (page) => {
   return (await el.count()) ? Number(await el.first().getAttribute("data-si")) : -1;
 };
 
+/* Records every sentence the highlight lands on, in order. Polling for a single
+   value can't tell "the tap moved us here" from "playback drifted here a second
+   and a half later", which is exactly the distinction the skip-direction specs
+   below need. */
+const recordSpeaking = (page) =>
+  page.evaluate(() => {
+    clearInterval(window.__seenTimer);
+    window.__seen = [];
+    window.__seenTimer = setInterval(() => {
+      const el = document.querySelector(".sent.speaking");
+      const si = el ? Number(el.dataset.si) : -1;
+      if (si >= 0 && window.__seen[window.__seen.length - 1] !== si) window.__seen.push(si);
+    }, 20);
+  });
+const seen = (page) => page.evaluate(() => window.__seen);
+const seenCount = (page) => page.evaluate(() => window.__seen.length);
+
 async function openBookReady(page, mockTTS, cfg) {
   await mockTTS(Object.assign({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.5 }, cfg));
   await page.goto("/");
@@ -117,6 +134,52 @@ test.describe("reading books aloud", () => {
     await page.click("#rNext"); // parked with si out of range — must clamp, not pump an empty run
     await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(0);
     await expect(page.locator("#banner")).toBeHidden(); // never "isn't producing any audio"
+  });
+
+  /* Previous/Next are the ONLY keyboard/assistive-tech path to sentence navigation
+     (the sentence spans are pointer-only by design), so a parked reader must still
+     honour the direction of the tap instead of collapsing both buttons into
+     "play the sentence you are already on". */
+  test("the skip buttons honour their direction while the reader is parked", async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS, { chunkSeconds: 1.5 });
+    // a freshly opened book parks on sentence one: Next must MOVE to sentence two
+    await expect(page.locator("#rStatus")).toContainText("tap play to listen");
+    await recordSpeaking(page);
+    await page.click("#rNext");
+    await expect.poll(() => seenCount(page), { timeout: 15_000 }).toBeGreaterThan(0);
+    expect((await seen(page))[0]).toBe(1); // the FIRST sentence spoken, not one it drifts into
+
+    // reopened at a saved position ("tap play to resume"): Previous must step BACK
+    await page.click('.sent[data-si="2"]'); // long sentences: the chapter can't finish before we pause
+    await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(2);
+    await page.click("#rPlay"); // pause so the saved position is stable
+    await page.waitForTimeout(400);
+    const saved = await speakingSi(page);
+    await page.reload();
+    await expect(page.locator("#rStatus")).toContainText("tap play to resume");
+    expect(await speakingSi(page)).toBe(saved);
+    await recordSpeaking(page); // [0] is the parked resume marker
+    await page.click("#rPrev");
+    await expect.poll(() => seenCount(page), { timeout: 15_000 }).toBeGreaterThan(1);
+    expect((await seen(page))[1]).toBe(saved - 1); // moved back, not forward off the parked sentence
+  });
+
+  test('Previous at "the end" replays the last sentence instead of restarting the chapter', async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS, { chunkSeconds: 1.5 });
+    await page.click("#tocBtn");
+    await page.locator("#tocList button").nth(2).click();
+    await expect(page.locator("#rChapter")).toHaveText("Chapter Three");
+    const last = (await page.locator(".sent").count()) - 1;
+    await page.click(`.sent[data-si="${last}"]`);
+    await expect(page.locator("#rStatus")).toContainText("the end", { timeout: 20_000 });
+
+    // the sentinel parks si one PAST the last sentence — Previous steps back onto it.
+    // It must NOT fall through to the Next behaviour of restarting at sentence one.
+    await recordSpeaking(page);
+    await page.click("#rPrev");
+    await expect(page.locator("#rStatus")).not.toContainText("the end", { timeout: 15_000 });
+    await expect(page.locator("#rStatus")).toContainText("the end", { timeout: 20_000 }); // the replay finished
+    expect(await seen(page)).toEqual([last]); // the highlight never left the last sentence
   });
 
   test("a synthesis failure parks the reader for retry instead of skipping the chapter", async ({ page, mockTTS }) => {

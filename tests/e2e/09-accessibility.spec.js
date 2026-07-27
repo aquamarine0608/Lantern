@@ -217,4 +217,51 @@ test.describe("accessibility and input", () => {
     await page.click("#tocBtn");
     await expect(page.locator("#tocList button.current")).toHaveAttribute("aria-current", "true");
   });
+
+  test("removing a book keeps focus on the shelf and announces the removal", async ({ page }) => {
+    await page.goto("/");
+    await importEpub(page, { title: "Alpha Book" });
+    await expect(page.locator(".book")).toHaveCount(1);
+    await importEpub(page, { title: "Beta Book" });
+    await expect(page.locator(".book")).toHaveCount(2);
+
+    // remove the first card from the keyboard: arm, then confirm
+    await page.locator(".book .b-del").first().focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator(".book .b-del").first()).toHaveText("Really remove?");
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator(".book")).toHaveCount(1);
+    // renderLibrary wipes the shelf — focus must land on the card that took this
+    // one's place, never on <body>
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement && document.activeElement.className), { timeout: 5_000 })
+      .toContain("b-del");
+    await expect
+      .poll(() => page.evaluate(() => document.getElementById("a11yAlert").textContent), { timeout: 5_000 })
+      .toContain("Removed");
+
+    // the last book: there is no card left to land on, so fall back to "Add a book"
+    await page.keyboard.press("Enter");
+    await expect(page.locator(".book .b-del").first()).toHaveText("Really remove?");
+    await page.keyboard.press("Enter");
+    await expect(page.locator(".book")).toHaveCount(0);
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement && document.activeElement.id), { timeout: 5_000 })
+      .toBe("addBookBtn");
+  });
+
+  test("a keyboard import hands focus back to the Add a book button", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#addBookBtn").focus();
+    expect(await page.evaluate(() => document.activeElement.id)).toBe("addBookBtn");
+    // the change event is dispatched with the button still focused; disabling it
+    // there drops focus to <body> unless the finally hands it back
+    await importEpub(page);
+    await expect(page.locator(".book .b-title")).toHaveText("The Test Book");
+    await expect(page.locator("#addBookBtn")).toHaveText("Add a book · EPUB"); // the import has settled
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement && document.activeElement.id), { timeout: 5_000 })
+      .toBe("addBookBtn");
+  });
 });

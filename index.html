@@ -1742,8 +1742,21 @@ async function renderLibrary() {
         return;
       }
       clearTimeout(delTimer);
+      const title = b.title, slot = [...shelf.children].indexOf(card);
       await dbDeleteBook(b.id);
-      renderLibrary();
+      await renderLibrary();
+      /* renderLibrary's shelf.innerHTML = "" unrenders the very button this click came
+         from, so focus would drop to <body> — the same hazard closeSheets, markTocCurrent,
+         qwenUseShown and collapseQwenDraftNote all guard. Land on the Remove of the card
+         that took this one's place (else the last card, else "Add a book"), which keeps
+         the Tab order the user had. The removal is otherwise imperceptible to AT — the
+         control simply stops existing — so say it happened. */
+      const cards = shelf.children;
+      const land = cards.length
+        ? cards[Math.min(slot, cards.length - 1)].querySelector(".b-del")
+        : addBookBtn;
+      if (land && land.isConnected && land.offsetParent !== null) land.focus();
+      announce(`Removed ${title}.`);
     });
     card.appendChild(del);
     shelf.appendChild(card);
@@ -1755,6 +1768,12 @@ bookFile.addEventListener("change", async () => {
   const f = bookFile.files[0];
   bookFile.value = "";
   if (!f) return;
+  /* disabling the FOCUSED control drops focus to <body> — same rule as closeSheets /
+     markTocCurrent / collapseQwenDraftNote. A keyboard import (Tab to this button,
+     Enter, pick a file) is dispatched with the button still focused, so without a
+     restore the import ends with nothing focused and the next Tab restarts at the top
+     of the document — exactly when an error banner has just asked for attention. */
+  const hadFocus = document.activeElement === addBookBtn;
   addBookBtn.disabled = true; addBookBtn.textContent = "Adding…";
   /* libVoiceBtn stays live through the awaits below (only addBookBtn is disabled),
      so a qwen hold banner can be raised — or already be standing — inside this
@@ -1798,6 +1817,14 @@ bookFile.addEventListener("change", async () => {
        is standing, and in the reader where the banner is position:fixed), so it is
        safe on every exit path. */
     addBookBtn.disabled = false; addBookBtn.textContent = "Add a book · EPUB";
+    /* give focus back only when the disable is what took it AND nothing has claimed it
+       since (a Tab during the awaits, or a route change that hid the library) — never
+       steal it. preventScroll + placement BEFORE revealBanner: focus() scrolls its
+       target into view, and this button sits at the top of the view while the banner is
+       the last in-flow element, so an unguarded focus here would scroll the just-
+       revealed banner back off the fold on a multi-row shelf. */
+    if (hadFocus && (!document.activeElement || document.activeElement === document.body)
+        && addBookBtn.offsetParent !== null) addBookBtn.focus({ preventScroll: true });
     revealBanner(); /* the shelf just grew under a standing hold */
   }
 });
@@ -2275,14 +2302,22 @@ function readerToggle(force) {
 }
 
 function readerSkip(d) {
-  if (!rd.book) return;
-  if (!rd.started) { readerPlayFrom(rd.si >= rd.sentences.length ? 0 : (rd.si || 0)); return; } /* same clamp as play: "the end" parks si out of range */
-  const t = rd.si + d;
+  if (!rd.book || !rd.sentences.length) return;
+  /* PARKED (a freshly opened book, "tap play to resume/retry/continue", "the end"):
+     these controls are labelled Previous/Next SENTENCE and — with sentence spans
+     pointer-only by design — they are the keyboard path to sentence navigation, so
+     starting playback is the SIDE EFFECT of the move, never a substitute for it.
+     Only the end-of-chapter sentinel has no sentence to step from (readerChapterDone
+     parks si one PAST the last): there Next restarts the chapter and Previous
+     replays the last sentence. */
+  let t;
+  if (!rd.started && rd.si >= rd.sentences.length) t = d < 0 ? rd.sentences.length - 1 : 0;
+  else t = (rd.si || 0) + d;
   if (t < 0) {
     if (rd.ch > 0) {
       rd.ch--; renderChapter();
       readerPlayFrom(Math.max(0, rd.sentences.length - 1));
-    }
+    } else if (!rd.started) readerPlayFrom(0); /* parked before sentence 1: no move to make, but still answer the tap */
     return;
   }
   if (t >= rd.sentences.length) { readerStopPlayback(); readerChapterDone(); return; }
@@ -3021,7 +3056,23 @@ async function openReader(id) {
   try { book = await dbGetBook(id); } catch {}
   if (book) { try { prog = await dbGetProgress(id); } catch {} }
   if (location.hash !== wantHash) return; /* user navigated away while loading */
-  if (!book) { location.replace("#library"); return; } /* replace: no history trap on dead deep links */
+  if (!book) {
+    /* replace: no history trap on dead deep links. A cold-boot deep link arrives
+       with activeView "" and the bounce runs showView("library") in FULL. An
+       in-app card tap does not: it comes FROM the library, where showView
+       early-returns on activeView === name — nothing re-renders, the ghost card
+       keeps its live handler, and renderLibrary's "Couldn't open Lantern's book
+       storage" diagnostic (the dbGetBook-rejects case, swallowed by the catch
+       above) is never painted. Refresh the shelf here for exactly that case;
+       .finally(revealBanner) mirrors showView, since the shelf shrinking under a
+       standing qwen hold can move it. */
+    if (activeView === "library") {
+      announce("That book is no longer on this shelf.");
+      renderLibrary().finally(revealBanner);
+    }
+    location.replace("#library");
+    return;
+  }
   stopQuickRead();
   if (rd.book && rd.book.id !== id) readerTeardown();
   showView("reader");
