@@ -1193,6 +1193,23 @@ function switchToFile(offset, autoplay) {
 }
 
 /* ---------------- main flow ---------------- */
+/* [hidden] is display:none, so hiding the player unrenders #playBtn — which is never
+   disabled and is the very next Tab stop after #readBtn for the whole warm-up /
+   generation window (Save WAV starts disabled). Focus would drop to <body> exactly as
+   these paths raise an error banner, so the next Tab restarts at the top of the view.
+   Land on the primary action, which every caller has just re-labelled "Read aloud".
+   Same rule as closeSheets / markTocCurrent / the import restore — but NOT the same
+   shape: those restore across an await, by which time the focus fix-up has settled on
+   <body>. Here the hide and the restore are one synchronous statement and Chromium has
+   not run the fix-up yet (document.activeElement is still the button), so the
+   "nothing claimed it since" test must be the pre-hide containment check instead —
+   nothing can claim focus in between. preventScroll: readBtn sits above the in-flow
+   banner these paths just revealed, and focus() would otherwise scroll it off. */
+function hidePlayer() {
+  const hadFocus = player.contains(document.activeElement);
+  player.hidden = true;
+  if (hadFocus && readBtn.offsetParent !== null) readBtn.focus({ preventScroll: true });
+}
 readBtn.addEventListener("click", async () => {
   if (mode === "generating") { /* acting as Stop */
     aborted = true;
@@ -1252,7 +1269,7 @@ readBtn.addEventListener("click", async () => {
   if (myToken !== qrToken || !ctx) return; /* superseded / torn down while resuming — the newer owner fixed the UI */
   if (aborted) { /* Stop (or an engine change) pressed while the context was activating */
     readBtn.textContent = "Read aloud"; readBtn.classList.remove("stopping", "working");
-    mode = "idle"; player.hidden = true; resetSession();
+    mode = "idle"; hidePlayer(); resetSession();
     releaseMediaSession();
     return;
   }
@@ -1273,7 +1290,7 @@ readBtn.addEventListener("click", async () => {
     if (qrWarmToken === myToken) qrWarmToken = 0;
     if (myToken !== qrToken) return; /* superseded — a newer session owns the shared state now */
     readBtn.textContent = "Read aloud"; readBtn.classList.remove("stopping", "working");
-    mode = "idle"; player.hidden = true;
+    mode = "idle"; hidePlayer();
     resetSession(); /* closes the AudioContext — iOS caps live contexts, so a failed attempt must not leak one */
     releaseMediaSession(); /* it was set "playing" before the await */
     return;
@@ -1282,7 +1299,7 @@ readBtn.addEventListener("click", async () => {
   if (myToken !== qrToken) return; /* view switched away during the download — never touch the shared audio element */
   if (aborted) { /* Stop was pressed while the model was still downloading */
     readBtn.textContent = "Read aloud"; readBtn.classList.remove("stopping", "working");
-    mode = "idle"; player.hidden = true; resetSession();
+    mode = "idle"; hidePlayer(); resetSession();
     releaseMediaSession();
     return;
   }
@@ -1340,7 +1357,7 @@ readBtn.addEventListener("click", async () => {
       showBanner(engine === "qwen"
         ? `<b>Your server answered, but returned no audio.</b> None of this text could be voiced — check the server's own logs, or try a different voice.`
         : `<b>This text isn't producing any audio.</b> The voice engine returned silence — try different text, or another voice.`, { error: true });
-    mode = "idle"; player.hidden = true; resetSession();
+    mode = "idle"; hidePlayer(); resetSession();
     releaseMediaSession();
     return;
   }
@@ -1374,7 +1391,7 @@ function stopQuickRead() {
   resetSession();
   aborted = true; /* AFTER resetSession — it resets the flag, which would leave the stream running */
   mode = "idle";
-  player.hidden = true;
+  hidePlayer();
   readBtn.textContent = "Read aloud";
   readBtn.classList.remove("stopping", "working");
   releaseMediaSession(); /* the session is gone, not parked */
@@ -1719,7 +1736,11 @@ async function renderLibrary() {
       cover.appendChild(img);
     } else {
       const ini = document.createElement("span"); ini.className = "initials";
-      ini.textContent = (b.title || "?").split(/\s+/).slice(0, 2).map(w => w[0] || "").join("").toUpperCase();
+      /* by CODE POINT, not code unit: w[0] on an emoji / astral first letter
+         (🌟, 𝐀, a Plane-2 CJK ideograph) yields a lone high surrogate, which paints
+         as a 36px U+FFFD on the cover tile — same surrogate back-off excerpt() and
+         splitLong() already apply. */
+      ini.textContent = (b.title || "?").split(/\s+/).slice(0, 2).map(w => [...w][0] || "").join("").toUpperCase();
       cover.appendChild(ini);
     }
     open.appendChild(cover);
@@ -2557,8 +2578,8 @@ engineBtns.addEventListener("click", ev => {
    would never fire for it and the displayed address would never be used. The
    equality guards make a no-op blur free — a focus-and-leave never restarts the
    sentence being read, and a change-then-blur pair applies only once. */
-let qwenUrlTouched = false;
-qwenUrl.addEventListener("input", () => { qwenUrlTouched = true; });
+let qwenUrlTouched = false, qwenUrlRefused = false;
+qwenUrl.addEventListener("input", () => { qwenUrlTouched = true; qwenUrlRefused = false; });
 /* PROVENANCE for the voice/key: the address that was SHOWN beside them when they
    were typed — the only address they may be committed against unless the Server
    field itself is being committed. "" (nothing shown) means "typed beside no host":
@@ -2678,6 +2699,20 @@ function commitQwenUrl() {
      Engine tap blurs on mousedown. Without this a dismissal would commit an
      unconfirmed draft address over a working server and destroy the draft. */
   if (!qwenUrlTouched && qwenServer && v !== qwenServer) { flushQwenFields(); updateQwenDraftNote(); announce(qwenDraftNoteText.textContent); return; }
+  /* text the parser cannot turn into an address is NOT an intentional clear. Only an
+     EMPTY field clears the setting; degenerate text ("https://", "/v1/audio/speech")
+     over a WORKING server keeps the live address and the draft — exactly the rule
+     commitShownServer already applies for the siblings. Without this, `qwenUrl.value = v`
+     below wipes the field, `changed` is true, and the working address is deleted from
+     qwenServer, localStorage AND (via the flush's clearQwenDraft) the draft, with no
+     banner and no way back — while the note still says "reading still uses <it>". */
+  if (!v && qwenUrl.value.trim() && qwenServer) {
+    flushQwenFields(); /* the half-typed text stays recoverable in the draft */
+    updateQwenDraftNote(); /* now honest, and it stays up */
+    /* change + blur are ONE gesture — say it once (the next keystroke re-arms it) */
+    if (!qwenUrlRefused) { qwenUrlRefused = true; announce(qwenDraftNoteText.textContent); }
+    return;
+  }
   qwenUrl.value = v;
   let changed = v !== qwenServer;
   const urlChanged = changed;
@@ -3068,7 +3103,28 @@ async function openReader(id) {
        standing qwen hold can move it. */
     if (activeView === "library") {
       announce("That book is no longer on this shelf.");
-      renderLibrary().finally(revealBanner);
+      /* renderLibrary's shelf.innerHTML = "" unrenders the very .book-open this tap
+         came from (Enter leaves it focused, and desktop clicks focus it too), so
+         focus would drop to <body> — the same hazard the Remove handler, closeSheets,
+         markTocCurrent and collapseQwenDraftNote all guard. Land on the card that
+         took the ghost's slot (else the last card, else "Add a book"), keeping the
+         Tab order the user had. Only when the rebuild is what took focus and nothing
+         has claimed it since — never steal it. preventScroll and BEFORE revealBanner,
+         exactly as the EPUB import does: focus() scrolls its target into view and the
+         banner is the last in-flow element. */
+      const cards = [...shelf.children];
+      const slot = cards.findIndex(c => c.dataset.id === id);
+      const hadFocus = slot >= 0 && cards[slot].contains(document.activeElement);
+      renderLibrary().finally(() => {
+        if (hadFocus && (!document.activeElement || document.activeElement === document.body)) {
+          const now = shelf.children;
+          const land = now.length
+            ? now[Math.min(slot, now.length - 1)].querySelector(".book-open")
+            : addBookBtn;
+          if (land && land.isConnected && land.offsetParent !== null) land.focus({ preventScroll: true });
+        }
+        revealBanner();
+      });
     }
     location.replace("#library");
     return;

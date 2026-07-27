@@ -251,6 +251,47 @@ test.describe("accessibility and input", () => {
       .toBe("addBookBtn");
   });
 
+  /* #playBtn lives inside #player, is never disabled, and is the very next Tab stop
+     after #readBtn for the whole warm-up / generation window. [hidden] is
+     display:none, so the failure paths that hide the player unrender the focused
+     button — focus must land on the primary action, not fall to <body> exactly as an
+     error banner asks for attention. */
+  test("a failed model download hands focus back to Read aloud, not <body>", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 2000, loadFail: true, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.goto("/#paste");
+    await page.fill("#text", "One sentence only here.");
+    await page.locator("#readBtn").focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#player")).toBeVisible();
+
+    await page.keyboard.press("Tab"); // the Pause button, live for the whole download
+    expect(await page.evaluate(() => document.activeElement && document.activeElement.id)).toBe("playBtn");
+
+    await expect(page.locator("#bannerText")).toContainText("Couldn't fetch the voice model", { timeout: 20_000 });
+    await expect(page.locator("#player")).toBeHidden();
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement && document.activeElement.id), { timeout: 5_000 })
+      .toBe("readBtn");
+  });
+
+  test("a reading that produces no audio hands focus back to Read aloud, not <body>", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 500, chunkSeconds: 0 });
+    await page.goto("/#paste");
+    await page.fill("#text", "One. Two.");
+    await page.locator("#readBtn").focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#player")).toBeVisible();
+
+    await page.keyboard.press("Tab");
+    expect(await page.evaluate(() => document.activeElement && document.activeElement.id)).toBe("playBtn");
+
+    await expect(page.locator("#bannerText")).toContainText("isn't producing any audio", { timeout: 20_000 });
+    await expect(page.locator("#player")).toBeHidden();
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement && document.activeElement.id), { timeout: 5_000 })
+      .toBe("readBtn");
+  });
+
   test("a keyboard import hands focus back to the Add a book button", async ({ page }) => {
     await page.goto("/");
     await page.locator("#addBookBtn").focus();

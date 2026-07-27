@@ -416,6 +416,40 @@ test.describe("Qwen3-TTS server engine", () => {
     }
   });
 
+  /* normalizeServerUrl returns "" for an intentional clear AND for text it simply
+     cannot parse. Committing the second as the first deletes a working address from
+     qwenServer, localStorage and the draft at once — silent and irreversible. */
+  test("unparseable Server text never deletes a working address", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+    }, QWEN_URL);
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.fill("#qwenUrl", "https://"); // scheme only — nothing the parser can use
+    await page.locator("#qwenUrl").blur();
+
+    // the working address survives everywhere, and the half-typed text stays put
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(QWEN_URL);
+    await expect(page.locator("#qwenUrl")).toHaveValue("https://");
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenDraft"))).not.toBeNull();
+    await expect(page.locator("#qwenDraftNote")).toBeVisible();
+    await expect(page.locator("#qwenDraftNoteText")).toContainText("reading still uses");
+    // the refusal is otherwise invisible, so it is announced
+    await expect
+      .poll(() => page.evaluate(() => document.getElementById("a11yAlert").textContent), { timeout: 5_000 })
+      .toContain("reading still uses");
+    // …and the chip stays honest: the live config was never touched
+    await expect(page.locator("#modelStateText")).toHaveText("qwen3-tts · server voice");
+
+    // an EMPTY field is a different gesture — the intentional clear still commits
+    await page.fill("#qwenUrl", "");
+    await page.locator("#qwenUrl").blur();
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe("");
+    await expect(page.locator("#modelStateText")).toHaveText("qwen3-tts · set server address");
+  });
+
   test("switching engines mid-paste stops the server session instead of lying about it", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.goto("/");

@@ -88,6 +88,63 @@ test.describe("library", () => {
       .toContain("no longer on this shelf");
   });
 
+  test("the ghost-card refresh lands focus on the shelf, never on <body>", async ({ page }) => {
+    const deleteRecord = (bookId) =>
+      page.evaluate(
+        (id) =>
+          new Promise((res, rej) => {
+            const open = indexedDB.open("lantern-books", 1);
+            open.onsuccess = () => {
+              const db = open.result;
+              const tx = db.transaction("books", "readwrite");
+              tx.objectStore("books").delete(id);
+              tx.oncomplete = () => { db.close(); res(); };
+              tx.onerror = () => { db.close(); rej(tx.error); };
+            };
+            open.onerror = () => rej(open.error);
+          }),
+        bookId
+      );
+
+    await page.goto("/");
+    await importEpub(page, { title: "Alpha Book" });
+    await expect(page.locator(".book")).toHaveCount(1);
+    await importEpub(page, { title: "Beta Book" });
+    await expect(page.locator(".book")).toHaveCount(2);
+
+    // a second tab removed the FIRST card's book since this shelf rendered
+    await deleteRecord(await page.locator(".book").first().getAttribute("data-id"));
+    await page.locator(".book-open").first().focus();
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator(".book")).toHaveCount(1);
+    // the refresh wipes the shelf out from under the focused .book-open — focus must
+    // land on the card that took the ghost's slot, not on <body>
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement && document.activeElement.className), { timeout: 5_000 })
+      .toContain("book-open");
+
+    // …and with no card left to land on, the fallback is "Add a book"
+    await deleteRecord(await page.locator(".book").first().getAttribute("data-id"));
+    await page.locator(".book-open").first().focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator(".book")).toHaveCount(0);
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement && document.activeElement.id), { timeout: 5_000 })
+      .toBe("addBookBtn");
+  });
+
+  test("cover initials never split a surrogate pair", async ({ page }) => {
+    await page.goto("/");
+    await importEpub(page, { title: "🌟 The Starless Sea", cover: false });
+    const ini = page.locator(".book .cover .initials");
+    await expect(ini).toHaveText("🌟T");
+    // w[0] indexes by CODE UNIT: an astral first letter would leave a lone high
+    // surrogate here, painted as a 36px U+FFFD on the cover tile
+    const text = await ini.textContent();
+    expect([...text].every((c) => { const n = c.codePointAt(0); return n < 0xd800 || n > 0xdfff; })).toBe(true);
+  });
+
   test("an EPUB 2 book (NCX toc, meta cover, subdirs, encoded hrefs) imports and reads correctly", async ({ page }) => {
     await page.goto("/");
     await page.setInputFiles("#bookFile", {
