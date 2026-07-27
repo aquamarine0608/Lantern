@@ -231,6 +231,9 @@
 
   /* ---------- bottom sheets ---------- */
   .sheet-backdrop { position: fixed; inset: 0; background: rgba(4,8,14,.55); z-index: 8; }
+  /* bottom-anchored: every height change is paid for out of the TOP edge, so nothing
+     inside a sheet may grow or shrink from a blur handler — that runs inside press 1
+     of a tap and slides the target out from under press 2 (see updateQwenDraftNote) */
   .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9; background: var(--page); border-top: 1px solid var(--line); border-radius: 18px 18px 0 0; padding: 16px 16px calc(18px + env(safe-area-inset-bottom)); max-height: 70dvh; overflow-y: auto; max-width: 640px; margin: 0 auto; }
   .sheet-title { font-family: var(--serif); font-style: italic; font-size: 18px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
   .sheet-done { background: var(--lamp); color: var(--ink); border: 0; border-radius: 10px; padding: 8px 16px; font-family: var(--body); font-style: normal; font-size: 13px; font-weight: 600; cursor: pointer; }
@@ -619,6 +622,19 @@ function hideBanner() { banner.hidden = true; flushAnnounceQueue(); a11yAlert.te
 /* an error reports on ONE attempt, in ONE view, under ONE engine — and the banner
    has no dismiss control, so anything that invalidates it must clear it */
 function clearErrorBanner() { if (!banner.hidden && banner.classList.contains("error")) hideBanner(); }
+/* showBanner scrolls a NEW error into view and closeSheets re-scrolls one the sheet
+   was covering — but a banner that outlives the moment it was raised can still be
+   pushed off screen by a later layout change under it: a route change re-lays out
+   the whole page, and the library's shelf is a natural-height grid that overflows
+   the viewport from three books up (and grows again on every import). Only a qwen
+   hold survives those points (bannerIsQwenHold exempts it from the clears), so this
+   is the state it lands in. block:"nearest" is a no-op when the banner is already
+   fully visible, and in the reader body.reading .banner is position:fixed, where
+   scrollIntoView is a no-op too. */
+function revealBanner() {
+  if (banner.hidden || !banner.classList.contains("error")) return;
+  banner.scrollIntoView({ block: "nearest" });
+}
 /* the three "Not saved yet" holds are NOT attempt errors: they say the values
    showing in Voice settings are not the ones reading uses. Starting a reading,
    importing a book or restarting the reader acts ON that mismatch — it never
@@ -1768,6 +1784,7 @@ bookFile.addEventListener("change", async () => {
        unanswered qwen hold (the settings commits clear it when it IS answered) */
     if (errBannerSeq === bannerAtStart && !bannerIsQwenHold()) clearErrorBanner();
     await renderLibrary();
+    revealBanner(); /* the shelf just grew under a standing hold */
   } finally {
     addBookBtn.disabled = false; addBookBtn.textContent = "Add a book · EPUB";
   }
@@ -1778,7 +1795,7 @@ bookFile.addEventListener("change", async () => {
    ================================================================ */
 const rd = {
   book: null, ch: 0, si: 0, hl: -1, sentences: [],
-  token: 0, playing: false, started: false, genDone: false,
+  token: 0, playing: false, started: false, genDone: false, genFailed: false,
   ctx: null, dest: null, sources: [], timings: [], scheduleT: 0, t0: 0,
   cache: new Map(), raf: 0, /* -Infinity, not 0: performance.now() starts at 0, so a 0
     sentinel would read as "user scrolled at page load" and kill follow-along for 4 s */
@@ -1798,6 +1815,7 @@ function readerStopPlayback() {
   if (rd.abortCtl) { rd.abortCtl.abort(); rd.abortCtl = null; } /* cancel any in-flight server request */
   for (const s of rd.sources) { try { s.onended = null; s.stop(); } catch {} }
   rd.sources = []; rd.timings = []; rd.genDone = false; rd.hl = -1;
+  rd.genFailed = false; /* the next run is not the failed one */
   rd.holdScrollSi = -1; /* a torn-down run must never suppress a later run's follow-along */
 }
 
@@ -2063,6 +2081,7 @@ async function readerPlayFrom(si, { scroll = true } = {}) {
         if (myToken !== rd.token) return; /* cancelled by a jump/teardown — not an error */
         console.error(err);
         genFailed = true;
+        rd.genFailed = true; /* the banner below promises play = retry from THIS instant */
         if (myToken === rd.token) {
           /* "tap play", NOT "tap a sentence": this banner is position:fixed over the
              top of #rScroll (see body.reading .banner) and covers the first 2-3 lines
@@ -2202,6 +2221,18 @@ function readerChapterDone() {
 
 function readerToggle(force) {
   if (!rd.book) return;
+  /* the failure banner says "Tap play to try again" the moment generation throws —
+     but the park that makes play mean retry lives in finish()'s genFailed branch,
+     which cannot run until every buffer scheduled BEFORE the failure has drained:
+     up to the whole 90 s backpressure window, and never at all once this tap
+     suspends the clock (a suspended context freezes currentTime, so last.onended
+     never fires). Retry now instead, from wherever playback actually is —
+     readerPlayFrom re-reads the already-cached sentences instantly and reaches the
+     failed one again. force === false (an OS/lock-screen pause) still pauses. */
+  if (rd.genFailed && force !== false) {
+    readerPlayFrom(rd.si >= rd.sentences.length ? 0 : (rd.si || 0));
+    return;
+  }
   if (!rd.started || !rd.ctx || rd.ctx.state === "closed") {
     if (force === false) return; /* a "pause" while parked must never start playback */
     readerPlayFrom(rd.si >= rd.sentences.length ? 0 : (rd.si || 0)); /* after "the end", restart the chapter */
@@ -2498,17 +2529,55 @@ const sibsMayRide = v => (!qwenVoiceBase || qwenVoiceBase === v) && (!qwenKeyBas
    Escape/backdrop dismissals never fire a blur commit at all — this note lives in
    the sheet beside the field, states which address reading ACTUALLY uses, and
    offers the one-tap way to make the shown address the live one. */
+/* .sheet is bottom-anchored (bottom: 0, auto height), so this note's ~68 px is paid
+   for out of the sheet's TOP edge — and the commit that COLLAPSES it runs from the
+   Server field's blur, i.e. inside press 1 of the very tap aimed at Done / Engine /
+   A+. Collapsing synchronously slides those controls down out from under the finger
+   before mouseup; the click then retargets to the sheet (or the backdrop) and the tap
+   does nothing at all, while the address commits silently. Same press-1-moves-press-2
+   class as the fixed 2lh .r-status box and the floated reader banner. Hold the
+   collapse for one frame — by then the click has been dispatched. SHOWING it stays
+   synchronous: that only ever happens on `input` in the field itself. */
+let noteCollapseRaf = 0;
+function collapseQwenDraftNote() {
+  noteCollapseRaf = 0;
+  if (engine === "qwen" && normalizeServerUrl(qwenUrl.value) !== qwenServer) return; /* diverged again meanwhile */
+  qwenDraftNote.hidden = true;
+}
 function updateQwenDraftNote() {
   const shown = normalizeServerUrl(qwenUrl.value);
   const diverged = engine === "qwen" && shown !== qwenServer;
-  qwenDraftNote.hidden = !diverged;
-  if (!diverged) return;
+  if (!diverged) {
+    if (!qwenDraftNote.hidden && !noteCollapseRaf) noteCollapseRaf = requestAnimationFrame(collapseQwenDraftNote);
+    return;
+  }
+  if (noteCollapseRaf) { cancelAnimationFrame(noteCollapseRaf); noteCollapseRaf = 0; }
+  qwenDraftNote.hidden = false;
   qwenDraftNoteText.textContent = qwenServer
     ? `Not saved yet — reading still uses ${qwenServer}.`
     : `Not saved yet — no server address is saved, so Qwen3-TTS can’t read.`;
   qwenUseShown.hidden = !shown;
 }
-qwenUseShown.addEventListener("click", () => { qwenUrlTouched = true; commitQwenUrl(); updateQwenDraftNote(); });
+/* the note — and this button inside it — is hidden the instant the shown address
+   becomes the live one, and [hidden] is display:none, so the control the user just
+   activated stops being rendered and focus falls to <body> INSIDE the open modal,
+   where every region of sheetInert is inert (same rule as markTocCurrent and
+   closeSheets). Land on the Server field this commit acted on: it is the subject of
+   the action, and it keeps the documented Tab order — the next Tab still reaches
+   qwenVoice, exactly as it did before the button disappeared. Safe here in a way it
+   would not be inside a blur handler (see commitShownServer): the commit has already
+   fully returned, and the blur commit this focus later schedules is a traced no-op
+   (v === qwenServer, so `changed` is false, and a still-held sibling re-raises the
+   identical text that refuseSibling's innerHTML guard dedupes). */
+qwenUseShown.addEventListener("click", () => {
+  qwenUrlTouched = true; commitQwenUrl(); updateQwenDraftNote();
+  /* the collapse is deferred by a frame for the BLUR path, where it would move the
+     tapped control out from under press 2 — but this IS press 2, already dispatched,
+     so take it now: leaving the note standing for a frame would hand the focus check
+     below a button that is still rendered and drop focus to <body> a frame later */
+  if (noteCollapseRaf) { cancelAnimationFrame(noteCollapseRaf); collapseQwenDraftNote(); }
+  if (qwenUseShown.offsetParent === null) qwenUrl.focus();
+});
 qwenUrl.addEventListener("input", updateQwenDraftNote);
 function commitQwenUrl() {
   const v = normalizeServerUrl(qwenUrl.value);
@@ -2959,7 +3028,11 @@ function showView(name) {
   viewPaste.classList.toggle("active", name === "paste");
   viewReader.classList.toggle("active", name === "reader");
   document.body.classList.toggle("reading", name === "reader");
-  if (name === "library") renderLibrary();
+  /* reveal AFTER the destination layout is final — renderLibrary builds the shelf
+     only once its two IDB reads resolve, so a synchronous call here would measure
+     the old, short layout (it catches its own failure, so .finally always runs) */
+  if (name === "library") renderLibrary().finally(revealBanner);
+  else revealBanner();
 }
 pasteModeBtn.addEventListener("click", () => { location.hash = "#paste"; });
 pasteBackBtn.addEventListener("click", () => { location.hash = "#library"; });

@@ -853,6 +853,46 @@ test.describe("Qwen3-TTS server engine", () => {
     await waitForFileMode(page); // …and reading actually uses it
   });
 
+  /* .sheet is bottom-anchored, so every height change inside it is paid for out of
+     the sheet's TOP edge. The divergence note collapses from the Server field's blur
+     commit — i.e. inside press 1 of the very tap aimed at Done / Engine / A+ — and
+     used to slide the target ~68 px down before mouseup, so the click retargeted to
+     the sheet body and the tap did nothing at all (while the address committed
+     silently). It took a second tap to reach the control the user had aimed at. */
+  test("committing the server address by tapping Done does not eat that tap", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.setViewportSize({ width: 390, height: 844 }); // under the 70dvh cap, so the top edge really moves
+    await page.addInitScript(() => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", "https://old-host.example");
+    });
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    // typed, not script-restored: only a touched field blur-commits, and only a
+    // commit collapses the note
+    await page.fill("#qwenUrl", QWEN_URL);
+    await expect(page.locator("#qwenDraftNote")).toBeVisible();
+    await page.click(".sheet:not([hidden]) .sheet-done"); // ONE tap, focus still in the field
+    await expect(page.locator("#sheetBackdrop")).toBeHidden(); // used to need a second tap
+    expect(await page.evaluate(() => localStorage.getItem("lantern.qwenUrl"))).toBe(QWEN_URL);
+  });
+
+  test("…and the same tap on the engine buttons still switches the engine", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", "https://old-host.example");
+    });
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.fill("#qwenUrl", QWEN_URL);
+    await expect(page.locator("#qwenDraftNote")).toBeVisible();
+    await page.click('#engineBtns button[data-e="kokoro"]'); // ONE tap, focus still in the field
+    expect(await page.evaluate(() => localStorage.getItem("lantern.engine"))).toBe("kokoro");
+    await expect(page.locator("#qwenCfg")).toBeHidden();
+  });
+
   test("a same-host unfinished key edit is named as such when settings reopen", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.addInitScript((url) => {
@@ -1230,6 +1270,36 @@ test.describe("Qwen3-TTS server engine", () => {
     await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
   });
 
+  /* the exemption keeps the hold standing across a route change — but the banner is
+     the last in-flow element of .wrap, and the library's shelf is a natural-height
+     grid, so on a full shelf the surviving banner landed hundreds of pixels below the
+     fold with scrollY unchanged: the destination view showed a healthy chip, no inline
+     note and no visible warning, which is the exact state the exemption exists to
+     prevent. Nothing re-scrolled it, because showBanner only scrolls at RAISE time. */
+  test("a hold that survives a route change is still on screen when the shelf overflows", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    await page.setViewportSize({ width: 390, height: 700 });
+    await page.addInitScript((url) => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", url);
+      localStorage.setItem("lantern.qwenKey", "sk-live");
+      // a same-host unfinished key edit: the hold reading uses the live key, not this one
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: url, v: "", k: "sk-draft", bv: url, bk: url }));
+    }, QWEN_URL);
+    await page.goto("/");
+    for (let i = 1; i <= 8; i++) await importEpub(page, { name: `book${i}.epub`, title: `Shelf Filler ${i}` });
+    await expect(page.locator(".book")).toHaveCount(8); // the shelf now overflows the viewport
+    await page.click("#libVoiceBtn");
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    await page.click(".sheet:not([hidden]) .sheet-done");
+    // a route change with the hold standing: library → paste → library
+    await page.click("#pasteModeBtn");
+    await expect(page.locator("#banner")).toBeInViewport();
+    await page.click("#pasteBackBtn");
+    await expect(page.locator("#bannerText")).toContainText("an unfinished edit");
+    await expect(page.locator("#banner")).toBeInViewport(); // used to be far below the fold
+  });
+
   test("answering a hold by retyping the live value takes it down — for good", async ({ page, mockTTS }) => {
     await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
     await page.addInitScript((url) => {
@@ -1474,5 +1544,43 @@ test.describe("Qwen3-TTS server engine", () => {
     await setQwenFail(false);
     await page.click("#rPlay");
     await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBe(0);
+  });
+
+  /* The banner promises "Tap play to try again" the instant synthesis throws — but the
+     park that makes play MEAN retry lives in finish()'s genFailed branch, which cannot
+     run until every buffer scheduled before the failure has drained (up to the whole
+     90 s backpressure window). Mid-drain the tap used to suspend the context instead:
+     no new synthesis, and — because a suspended context freezes currentTime — onended
+     never fired, so the park never arrived and the promised retry became unreachable.
+     The round-27 spec above only covers a sentence-1 failure, where nothing is
+     scheduled and finish() parks immediately. */
+  test("the failure banner's play tap retries even while earlier audio is still draining", async ({ page, mockTTS }) => {
+    await mockTTS({ loadDelay: 20, chunkDelay: 50, chunkSeconds: 0.4 });
+    // one long chapter: the qwen mock answers 0.5 s of audio per sentence, so a
+    // generation that runs ahead of the clock piles up a real drain window
+    const chapters = [
+      { title: "A Long Chapter", paras: Array.from({ length: 8 }, (_, p) =>
+        Array.from({ length: 5 }, (_, s) => `This is sentence ${p * 5 + s + 1} of the long first chapter.`).join(" ")) },
+      { title: "Chapter Two", paras: ["The second chapter is short."] },
+    ];
+    await page.goto("/");
+    await importEpub(page, { chapters });
+    await enableQwen(page);
+    await setQwenDelay(100); // pace generation so it stays ~4x ahead of playback, not 40x
+    const base = (await getQwenRequests()).length;
+    await page.click(".book");
+    await page.click("#rPlay");
+    // ~10 sentences generated is ~5 s of scheduled audio against ~1 s played
+    await expect.poll(async () => (await getQwenRequests()).length - base, { timeout: 30_000 }).toBeGreaterThanOrEqual(10);
+    await setQwenFail(true); // a mid-chapter sentence fails while earlier audio still plays
+    await expect(page.locator("#bannerText")).toContainText("Tap play to try again.", { timeout: 20_000 });
+    // the promise is made mid-drain — the reading is still running, so the park has not happened
+    await expect(page.locator("#rPlay")).toHaveAttribute("aria-label", "Pause");
+    await setQwenFail(false);
+    const beforeTap = (await getQwenRequests()).length;
+    await page.click("#rPlay"); // used to suspend the context: zero new synthesis, forever
+    await expect.poll(async () => (await getQwenRequests()).length - beforeTap, { timeout: 20_000 }).toBeGreaterThan(0);
+    await expect(page.locator(".sent.speaking")).toHaveCount(1);
+    await expect(page.locator("#rPlay")).toHaveAttribute("aria-label", "Pause"); // it retried, it did not pause
   });
 });

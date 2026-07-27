@@ -132,6 +132,30 @@ test.describe("accessibility and input", () => {
     expect(await page.evaluate(() => document.activeElement.id)).toBe("qwenKey");
   });
 
+  /* the note — and the adopt button inside it — is hidden the instant the shown
+     address becomes the live one, and [hidden] is display:none, so the control the
+     user just activated stops being rendered. Focus fell to <body> INSIDE the open
+     modal, where every other region is inert (the same defect markTocCurrent and
+     closeSheets already guard against). */
+  test("adopting the shown address keeps focus inside the open sheet", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("lantern.engine", "qwen");
+      localStorage.setItem("lantern.qwenUrl", "https://live.example");
+      localStorage.setItem("lantern.qwenDraft", JSON.stringify({ u: "https://draft.example", v: "", k: "" }));
+    });
+    await page.goto("/");
+    await page.click("#libVoiceBtn");
+    await page.locator("#qwenUrl").focus();
+    await page.keyboard.press("Tab");
+    expect(await page.evaluate(() => document.activeElement.id)).toBe("qwenUseShown");
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#qwenDraftNote")).toBeHidden();
+    await expect(page.locator("#setSheet")).toBeVisible();
+    expect(await page.evaluate(() => document.activeElement.id)).toBe("qwenUrl"); // used to be BODY
+    await page.keyboard.press("Tab"); // and the documented Tab order still holds
+    expect(await page.evaluate(() => document.activeElement.id)).toBe("qwenVoice");
+  });
+
   test("the settings-sheet speed and engine buttons keep a real touch height", async ({ page }) => {
     await page.goto("/");
     await importEpub(page);
