@@ -197,6 +197,32 @@ test.describe("reading books aloud", () => {
     await expect.poll(() => speakingSi(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(0);
   });
 
+  /* The park this banner reports leaves rd.started false, so readerSettingsChanged
+     early-returns and the voice change itself is the ONLY thing that can take the
+     banner down — without setVoice's clearErrorBanner the message survives the very
+     action it names as the remedy, fixed over the top of the chapter and floated
+     above the settings sheet the user picked the new voice in. */
+  test("changing the voice clears the failure banner whose remedy it is", async ({ page, mockTTS }) => {
+    await openBookReady(page, mockTTS, { chunkDelay: 30, chunkSeconds: 0 }); // every chunk comes back empty
+    await page.click("#rPlay");
+    await expect(page.locator("#bannerText")).toContainText("isn't producing any audio", { timeout: 20_000 });
+    await expect(page.locator("#rStatus")).toContainText("tap play to retry");
+
+    await page.click("#fontBtn");
+    const live = await page.locator("#rVoice").inputValue();
+    // the changed-value guard: re-picking the voice already reading answers nothing
+    await page.selectOption("#rVoice", live);
+    await expect(page.locator("#banner")).toBeVisible();
+
+    const other = await page.locator("#rVoice option").nth(3).getAttribute("value");
+    expect(other).not.toBe(live);
+    await page.selectOption("#rVoice", other);
+    await expect(page.locator("#banner")).toBeHidden();
+    // ...and the parked reader stays parked: no silent restart behind the open sheet
+    await expect(page.locator("#rStatus")).toContainText("tap play to retry");
+    await expect(page.locator("#rIconPlay")).toBeVisible();
+  });
+
   test("skipping back across a chapter boundary re-renders and keeps reading", async ({ page, mockTTS }) => {
     await openBookReady(page, mockTTS, { chunkSeconds: 1.5 });
     await page.click('.sent[data-si="5"]'); // finish chapter one

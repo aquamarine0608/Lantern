@@ -668,6 +668,20 @@ function setVoice(v) {
   if (voiceSel.value === v && rVoice.value === v) return;
   voiceSel.value = v; rVoice.value = v;
   try { localStorage.setItem("lantern.voice", v); } catch {}
+  /* the parked error describes an attempt made with the OLD voice — and the offline
+     kokoro banner names picking another voice as its ONLY remedy (kokoroErrorHtml
+     drops the "tap play" tail on that branch), so without this the message survives
+     the very action it asked for: finish()'s genFailed park leaves rd.started false,
+     so readerSettingsChanged below returns early and nothing else takes it down until
+     an extra, unadvertised play tap. Exactly commitQwenVoice's clear at the kokoro
+     voice control. Inside the changed-value guard above, like every other commit's:
+     re-picking the live voice stays a no-op. No reportQwenShadow re-raise needed —
+     a qwen hold cannot stand here (voiceSel is disabled and #kokoroCfg is
+     display:none under the qwen engine, and setEngine clears any error on the way
+     back to kokoro) — and it would be a no-op anyway, bailing on engine !== "qwen".
+     BEFORE readerSettingsChanged: hideBanner flushes the announce queue, so the
+     park branch's "tap play to resume" must be announced after this, not before. */
+  clearErrorBanner();
   readerSettingsChanged();
 }
 function setSpeed(s) {
@@ -2209,7 +2223,7 @@ async function readerPlayFrom(si, { scroll = true } = {}) {
       rd.playing = false; rd.started = false;
       setReaderIcon("play");
       /* the banner is the only other trace of this park, and the very actions that
-         fix the failure clear it (setEngine / commitQwenUrl → clearErrorBanner),
+         fix the failure clear it (setEngine / commitQwenUrl / setVoice → clearErrorBanner),
          with readerSettingsChanged returning early on !rd.started — leave the hint
          in the status line, which nothing else touches */
       updateReaderStatus("tap play to retry");
