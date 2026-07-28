@@ -1,0 +1,51 @@
+name: Lantern
+options:
+  bundleIdPrefix: com.lanternreader
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  LanternApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: LanternApp
+      - path: ../index.html
+        buildPhase: resources
+      - path: ../sw.js
+        buildPhase: resources
+      - path: ../manifest.webmanifest
+        buildPhase: resources
+      - path: ../native-tts-adapter.js
+        buildPhase: resources
+      - path: ../icon-180.png
+        buildPhase: resources
+      - path: ../icon-512.png
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lanternreader.app
+        PRODUCT_NAME: Lantern
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: NO
+    info:
+      path: LanternApp/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Lantern
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+  LanternAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: LanternAppTests
+    dependencies:
+      - target: LanternApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lanternreader.app.tests

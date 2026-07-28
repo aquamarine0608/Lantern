@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "manifestId": "qwen3-tts-12hz-0.6b-customvoice-mlx-bf16",
+  "manifestRevision": 1,
+  "releaseStatus": "device_gated",
+  "runtime": {
+    "repository": "soniqo/speech-swift",
+    "commit": "555bede026f6663cef998c2458af7daf04aa79f2",
+    "product": "Qwen3TTS",
+    "minimumIOSVersion": "18.0",
+    "license": "Apache-2.0"
+  },
+  "audio": {
+    "sampleRateHz": 24000,
+    "channelCount": 1,
+    "pcmFormat": "float32",
+    "codecFrameRateHz": 12.5,
+    "samplesPerCodecFrame": 1920
+  },
+  "downloadPolicy": {
+    "immutableRevisionsOnly": true,
+    "sha256RequiredForEveryFile": true,
+    "allowDownloadWithMissingSha256": false,
+    "minimumFreeSpaceBytes": 4000000000,
+    "expectedInstalledBytes": 2498413436,
+    "stagingMustShareVolumeWithInstall": true,
+    "atomicPromotionRequired": true
+  },
+  "components": [
+    {
+      "id": "main-model",
+      "role": "qwen3-tts-custom-voice",
+      "repository": "aufklarer/Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-bf16",
+      "revision": "3affbf656d9d6aa9255ec0b31cc90055605170bc",
+      "license": "Apache-2.0",
+      "expectedBytes": 1816117698,
+      "files": [
+        {
+          "path": "config.json",
+          "expectedBytes": 4908,
+          "sha256": null,
+          "sha256Status": "required_before_download"
+        },
+        {
+          "path": "merges.txt",
+          "expectedBytes": 1671839,
+          "sha256": null,
+          "sha256Status": "required_before_download"
+        },
+        {
+          "path": "model.safetensors",
+          "expectedBytes": 1811626144,
+          "sha256": "465675a36380251e143cfbca8d693f375c47ba6bf0ae334966cb529ef1be34d9",
+          "sha256Status": "verified_from_huggingface_lfs_metadata"
+        },
+        {
+          "path": "model.safetensors.index.json",
+          "expectedBytes": 30630,
+          "sha256": null,
+          "sha256Status": "required_before_download"
+        },
+        {
+          "path": "tokenizer_config.json",
+          "expectedBytes": 7344,
+          "sha256": null,
+          "sha256Status": "required_before_download"
+        },
+        {
+          "path": "vocab.json",
+          "expectedBytes": 2776833,
+          "sha256": null,
+          "sha256Status": "required_before_download"
+        }
+      ]
+    },
+    {
+      "id": "speech-codec",
+      "role": "qwen3-tts-tokenizer-12hz",
+      "repository": "Qwen/Qwen3-TTS-Tokenizer-12Hz",
+      "revision": "7dd38ad4e9bad454aae9cd937d0cd577604fe229",
+      "license": "Apache-2.0",
+      "expectedBytes": 682295738,
+      "files": [
+        {
+          "path": "config.json",
+          "expectedBytes": 2336,
+          "sha256": null,
+          "sha256Status": "required_before_download"
+        },
+        {
+          "path": "configuration.json",
+          "expectedBytes": 76,
+          "sha256": null,
+          "sha256Status": "required_before_download"
+        },
+        {
+          "path": "model.safetensors",
+          "expectedBytes": 682293092,
+          "sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+          "sha256Status": "verified_from_huggingface_lfs_metadata"
+        },
+        {
+          "path": "preprocessor_config.json",
+          "expectedBytes": 234,
+          "sha256": null,
+          "sha256Status": "required_before_download"
+        }
+      ]
+    }
+  ],
+  "customVoiceSpeakers": [
+    {
+      "id": "serena",
+      "tokenId": 3066,
+      "dialect": null
+    },
+    {
+      "id": "vivian",
+      "tokenId": 3065,
+      "dialect": null
+    },
+    {
+      "id": "uncle_fu",
+      "tokenId": 3010,
+      "dialect": null
+    },
+    {
+      "id": "ryan",
+      "tokenId": 3061,
+      "dialect": null
+    },
+    {
+      "id": "aiden",
+      "tokenId": 2861,
+      "dialect": null
+    },
+    {
+      "id": "ono_anna",
+      "tokenId": 2873,
+      "dialect": null
+    },
+    {
+      "id": "sohee",
+      "tokenId": 2864,
+      "dialect": null
+    },
+    {
+      "id": "eric",
+      "tokenId": 2875,
+      "dialect": "sichuan_dialect"
+    },
+    {
+      "id": "dylan",
+      "tokenId": 2878,
+      "dialect": "beijing_dialect"
+    }
+  ]
+}
