@@ -1,0 +1,709 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "lantern-qwen-device-gate-v1",
+  "license": "CC0-1.0",
+  "provenance": "Original sentences constructed for Lantern device testing; no book excerpts or third-party prose.",
+  "defaultSpeaker": "aiden",
+  "items": [
+    {
+      "id": "baseline-001",
+      "category": "baseline",
+      "language": "en",
+      "tags": ["short", "declarative"],
+      "text": "The reading lamp is on."
+    },
+    {
+      "id": "baseline-002",
+      "category": "baseline",
+      "language": "en",
+      "tags": ["medium", "declarative"],
+      "text": "A small boat crossed the quiet harbor before sunrise."
+    },
+    {
+      "id": "baseline-003",
+      "category": "baseline",
+      "language": "en",
+      "tags": ["imperative"],
+      "text": "Please continue reading from the next paragraph."
+    },
+    {
+      "id": "baseline-004",
+      "category": "baseline",
+      "language": "en",
+      "tags": ["question"],
+      "text": "Did the package arrive before noon?"
+    },
+    {
+      "id": "baseline-005",
+      "category": "baseline",
+      "language": "en",
+      "tags": ["exclamation"],
+      "text": "That was an unexpectedly bright idea!"
+    },
+    {
+      "id": "baseline-006",
+      "category": "baseline",
+      "language": "en",
+      "tags": ["compound"],
+      "text": "Mara closed the window, and the room became quiet."
+    },
+    {
+      "id": "baseline-007",
+      "category": "baseline",
+      "language": "en",
+      "tags": ["negation"],
+      "text": "The final answer was not hidden in the envelope."
+    },
+    {
+      "id": "baseline-008",
+      "category": "baseline",
+      "language": "en",
+      "tags": ["contractions"],
+      "text": "I can't tell whether they'll arrive, but we shouldn't worry."
+    },
+    {
+      "id": "baseline-009",
+      "category": "baseline",
+      "language": "en",
+      "tags": ["proper-names"],
+      "text": "Nora and Malik met Priya beside Cedar Station."
+    },
+    {
+      "id": "baseline-010",
+      "category": "baseline",
+      "language": "en",
+      "tags": ["very-short"],
+      "text": "Wait."
+    },
+    {
+      "id": "punctuation-011",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["commas", "list"],
+      "text": "The box held a map, a compass, a pencil, and two blue ribbons."
+    },
+    {
+      "id": "punctuation-012",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["semicolon"],
+      "text": "The rain stopped at dusk; the streets remained silver for hours."
+    },
+    {
+      "id": "punctuation-013",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["colon"],
+      "text": "Remember one rule: save your place before closing the book."
+    },
+    {
+      "id": "punctuation-014",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["em-dash"],
+      "text": "The answer—surprisingly simple—was written on the back."
+    },
+    {
+      "id": "punctuation-015",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["en-dash", "range"],
+      "text": "The museum is open Tuesday–Sunday from nine until five."
+    },
+    {
+      "id": "punctuation-016",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["ellipsis", "hesitation"],
+      "text": "I thought I heard footsteps… but the hallway was empty."
+    },
+    {
+      "id": "punctuation-017",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["interrobang-like", "emphasis"],
+      "text": "You finished all of that already?!"
+    },
+    {
+      "id": "punctuation-018",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["parentheses"],
+      "text": "The northern trail (the shorter route) closes after the first snow."
+    },
+    {
+      "id": "punctuation-019",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["brackets"],
+      "text": "The editor marked the date [April 12] for later verification."
+    },
+    {
+      "id": "punctuation-020",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["slash"],
+      "text": "Select the audio/text option that matches your current task."
+    },
+    {
+      "id": "punctuation-021",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["hyphenation"],
+      "text": "A well-timed, low-risk decision kept the project moving."
+    },
+    {
+      "id": "punctuation-022",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["apostrophe", "possessive"],
+      "text": "The children's coats hung beside James's umbrella."
+    },
+    {
+      "id": "punctuation-023",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["colon", "semicolon", "commas"],
+      "text": "Three signals appeared: amber, then green; after that, the door opened."
+    },
+    {
+      "id": "punctuation-024",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["line-break"],
+      "text": "The first clause ends before the line break,\nand the second clause continues without a heading."
+    },
+    {
+      "id": "punctuation-025",
+      "category": "punctuation",
+      "language": "en",
+      "tags": ["multiple-clauses"],
+      "text": "If the light flashes, pause; if it stays dark, continue; if it turns red, stop."
+    },
+    {
+      "id": "abbreviation-026",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["title", "sentence-boundary"],
+      "text": "Dr. Imani checked the result twice before she called."
+    },
+    {
+      "id": "abbreviation-027",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["titles"],
+      "text": "Mr. Park and Mrs. Diaz reserved the last two seats."
+    },
+    {
+      "id": "abbreviation-028",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["academic-title"],
+      "text": "Prof. Chen begins the lecture at ten."
+    },
+    {
+      "id": "abbreviation-029",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["initialism", "countries"],
+      "text": "The U.S. office called the U.K. office before lunch."
+    },
+    {
+      "id": "abbreviation-030",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["latin-abbreviation"],
+      "text": "Bring a quiet activity, e.g., a sketchbook or a puzzle."
+    },
+    {
+      "id": "abbreviation-031",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["latin-abbreviation"],
+      "text": "The switch is local, i.e., it never sends the book text away."
+    },
+    {
+      "id": "abbreviation-032",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["etcetera"],
+      "text": "Pack socks, gloves, scarves, etc., in the upper compartment."
+    },
+    {
+      "id": "abbreviation-033",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["time"],
+      "text": "The first session starts at 8:05 a.m., and the last ends at 6:30 p.m."
+    },
+    {
+      "id": "abbreviation-034",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["street-address"],
+      "text": "Meet at 42 W. Cedar St. near Fifth Ave."
+    },
+    {
+      "id": "abbreviation-035",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["company"],
+      "text": "Northwind Labs, Inc. acquired a small robotics co. in May."
+    },
+    {
+      "id": "abbreviation-036",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["number", "volume", "chapter"],
+      "text": "See No. 18 in vol. 3, ch. 7 for the revised diagram."
+    },
+    {
+      "id": "abbreviation-037",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["personal-initials", "suffix"],
+      "text": "A. J. Rivera Jr. signed the receipt."
+    },
+    {
+      "id": "abbreviation-038",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["software-version"],
+      "text": "Version v2.1.0 fixes the pause-resume bug."
+    },
+    {
+      "id": "abbreviation-039",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["web", "email"],
+      "text": "Send the note to test@example.com, then visit example.org/help."
+    },
+    {
+      "id": "abbreviation-040",
+      "category": "abbreviation",
+      "language": "en",
+      "tags": ["terminal-abbreviation", "boundary"],
+      "text": "The package was addressed to Capt. Rowan."
+    },
+    {
+      "id": "number-041",
+      "category": "number",
+      "language": "en",
+      "tags": ["integer", "thousands-separator"],
+      "text": "The archive contains 12,480 labeled recordings."
+    },
+    {
+      "id": "number-042",
+      "category": "number",
+      "language": "en",
+      "tags": ["decimal"],
+      "text": "The measured delay was 0.375 seconds."
+    },
+    {
+      "id": "number-043",
+      "category": "number",
+      "language": "en",
+      "tags": ["negative-number"],
+      "text": "At dawn, the outdoor sensor reported minus 7.2 degrees."
+    },
+    {
+      "id": "number-044",
+      "category": "number",
+      "language": "en",
+      "tags": ["percentage"],
+      "text": "Battery charge fell from 83% to 79% during the test."
+    },
+    {
+      "id": "number-045",
+      "category": "number",
+      "language": "en",
+      "tags": ["currency", "decimal"],
+      "text": "The replacement cable costs $14.95 before tax."
+    },
+    {
+      "id": "number-046",
+      "category": "number",
+      "language": "en",
+      "tags": ["multiple-currencies"],
+      "text": "The same ticket was listed as €18, £16, or ¥2,900."
+    },
+    {
+      "id": "number-047",
+      "category": "number",
+      "language": "en",
+      "tags": ["clock-time"],
+      "text": "The alarm is set for 07:45:30."
+    },
+    {
+      "id": "number-048",
+      "category": "number",
+      "language": "en",
+      "tags": ["iso-date"],
+      "text": "The snapshot was created on 2026-07-28."
+    },
+    {
+      "id": "number-049",
+      "category": "number",
+      "language": "en",
+      "tags": ["spoken-date"],
+      "text": "Our next review is scheduled for January 5, 2027."
+    },
+    {
+      "id": "number-050",
+      "category": "number",
+      "language": "en",
+      "tags": ["fraction", "mixed-number"],
+      "text": "Add one and three-quarter cups of water."
+    },
+    {
+      "id": "number-051",
+      "category": "number",
+      "language": "en",
+      "tags": ["ratio"],
+      "text": "Mix the concentrate and water at a ratio of 1:4."
+    },
+    {
+      "id": "number-052",
+      "category": "number",
+      "language": "en",
+      "tags": ["units"],
+      "text": "The parcel measures 31.5 cm by 22 cm and weighs 1.8 kg."
+    },
+    {
+      "id": "number-053",
+      "category": "number",
+      "language": "en",
+      "tags": ["temperature", "unicode-unit"],
+      "text": "Set the oven to 190 °C, or about 375 °F."
+    },
+    {
+      "id": "number-054",
+      "category": "number",
+      "language": "en",
+      "tags": ["telephone"],
+      "text": "The fictional support number is 555-014-9082."
+    },
+    {
+      "id": "number-055",
+      "category": "number",
+      "language": "en",
+      "tags": ["address", "ordinal"],
+      "text": "Deliver the sample to 208 North 3rd Street, apartment 4B."
+    },
+    {
+      "id": "number-056",
+      "category": "number",
+      "language": "en",
+      "tags": ["coordinates"],
+      "text": "The marker is near 37.7749 degrees north, 122.4194 degrees west."
+    },
+    {
+      "id": "number-057",
+      "category": "number",
+      "language": "en",
+      "tags": ["scientific-notation"],
+      "text": "The estimate is 6.02 × 10²³ particles."
+    },
+    {
+      "id": "number-058",
+      "category": "number",
+      "language": "en",
+      "tags": ["arithmetic", "symbols"],
+      "text": "Twelve divided by three equals four, so 12 ÷ 3 = 4."
+    },
+    {
+      "id": "number-059",
+      "category": "number",
+      "language": "en",
+      "tags": ["year-range", "en-dash"],
+      "text": "The 1998–2004 records are stored in cabinet seven."
+    },
+    {
+      "id": "number-060",
+      "category": "number",
+      "language": "en",
+      "tags": ["ordinal", "roman-numeral"],
+      "text": "The twenty-first entry refers to Appendix IV."
+    },
+    {
+      "id": "quotation-061",
+      "category": "quotation",
+      "language": "en",
+      "tags": ["straight-quotes"],
+      "text": "\"Start with the blue folder,\" Mina said."
+    },
+    {
+      "id": "quotation-062",
+      "category": "quotation",
+      "language": "en",
+      "tags": ["curly-quotes"],
+      "text": "Owen whispered, “The gate is still open.”"
+    },
+    {
+      "id": "quotation-063",
+      "category": "quotation",
+      "language": "en",
+      "tags": ["nested-quotes"],
+      "text": "She replied, “I heard him say, ‘Meet me outside,’ before the call ended.”"
+    },
+    {
+      "id": "quotation-064",
+      "category": "quotation",
+      "language": "en",
+      "tags": ["quoted-question"],
+      "text": "“Where did you put the key?” asked Theo."
+    },
+    {
+      "id": "quotation-065",
+      "category": "quotation",
+      "language": "en",
+      "tags": ["quote-at-end", "boundary"],
+      "text": "The final instruction was, “Turn left.”"
+    },
+    {
+      "id": "quotation-066",
+      "category": "quotation",
+      "language": "en",
+      "tags": ["single-quotes", "apostrophe"],
+      "text": "The label said 'reader's copy,' although no owner was named."
+    },
+    {
+      "id": "quotation-067",
+      "category": "quotation",
+      "language": "en",
+      "tags": ["dialogue", "colon"],
+      "text": "The guide made one request: “Please stay with the group.”"
+    },
+    {
+      "id": "quotation-068",
+      "category": "quotation",
+      "language": "en",
+      "tags": ["scare-quotes"],
+      "text": "The so-called “instant” update took nearly an hour."
+    },
+    {
+      "id": "quotation-069",
+      "category": "quotation",
+      "language": "en",
+      "tags": ["interrupted-dialogue", "em-dash"],
+      "text": "“I was going to explain—” “Then explain now,” Jules replied."
+    },
+    {
+      "id": "quotation-070",
+      "category": "quotation",
+      "language": "en",
+      "tags": ["quote", "ellipsis"],
+      "text": "Her note began, “If the weather changes…” and ended there."
+    },
+    {
+      "id": "quotation-071",
+      "category": "quotation",
+      "language": "en",
+      "tags": ["air-quotes", "hyphenation"],
+      "text": "He called the temporary repair “good enough,” but checked it again."
+    },
+    {
+      "id": "quotation-072",
+      "category": "quotation",
+      "language": "en",
+      "tags": ["multiple-speakers"],
+      "text": "“Ready?” asked Sam; “Ready,” answered Lee."
+    },
+    {
+      "id": "unicode-073",
+      "category": "unicode",
+      "language": "en",
+      "tags": ["diacritics"],
+      "text": "Zoë ordered a café au lait and a warm piñon pastry."
+    },
+    {
+      "id": "unicode-074",
+      "category": "unicode",
+      "language": "en",
+      "tags": ["names", "diacritics"],
+      "text": "Renée, Björn, and Łukasz shared the same table."
+    },
+    {
+      "id": "unicode-075",
+      "category": "unicode",
+      "language": "en",
+      "tags": ["emoji"],
+      "text": "The status changed from warning ⚠️ to ready ✅."
+    },
+    {
+      "id": "unicode-076",
+      "category": "unicode",
+      "language": "en",
+      "tags": ["mathematical-symbols"],
+      "text": "For this test, x ≤ 5, y ≥ 2, and x ≠ y."
+    },
+    {
+      "id": "unicode-077",
+      "category": "unicode",
+      "language": "en",
+      "tags": ["arrows"],
+      "text": "Follow the sequence input → buffer → speaker."
+    },
+    {
+      "id": "unicode-078",
+      "category": "unicode",
+      "language": "en",
+      "tags": ["greek-letters"],
+      "text": "Alpha α, beta β, and gamma γ label the three channels."
+    },
+    {
+      "id": "unicode-079",
+      "category": "unicode",
+      "language": "en",
+      "tags": ["copyright-trademark-symbols"],
+      "text": "The mock label contains ©, ™, and ® symbols for pronunciation testing."
+    },
+    {
+      "id": "unicode-080",
+      "category": "unicode",
+      "language": "en",
+      "tags": ["ampersand", "plus"],
+      "text": "Research & Design met with Audio + Systems."
+    },
+    {
+      "id": "unicode-081",
+      "category": "unicode",
+      "language": "en",
+      "tags": ["accented-place-names"],
+      "text": "The route connects Malmö, Zürich, and São Paulo."
+    },
+    {
+      "id": "unicode-082",
+      "category": "unicode",
+      "language": "en",
+      "tags": ["music", "symbols"],
+      "text": "The melody rises from C♯ to E♭ before resolving."
+    },
+    {
+      "id": "multilingual-083",
+      "category": "multilingual",
+      "language": "zh",
+      "tags": ["chinese", "punctuation"],
+      "text": "清晨的风很轻，我们沿着河边慢慢地走。"
+    },
+    {
+      "id": "multilingual-084",
+      "category": "multilingual",
+      "language": "ja",
+      "tags": ["japanese", "question"],
+      "text": "次の駅で降りる準備はできましたか？"
+    },
+    {
+      "id": "multilingual-085",
+      "category": "multilingual",
+      "language": "ko",
+      "tags": ["korean"],
+      "text": "창문을 열자 시원한 바람이 방 안으로 들어왔습니다."
+    },
+    {
+      "id": "multilingual-086",
+      "category": "multilingual",
+      "language": "de",
+      "tags": ["german", "umlaut"],
+      "text": "Über dem ruhigen See leuchteten plötzlich drei helle Sterne."
+    },
+    {
+      "id": "multilingual-087",
+      "category": "multilingual",
+      "language": "fr",
+      "tags": ["french", "apostrophe"],
+      "text": "À l'entrée du jardin, Élise a trouvé une petite clé."
+    },
+    {
+      "id": "multilingual-088",
+      "category": "multilingual",
+      "language": "es",
+      "tags": ["spanish", "inverted-question"],
+      "text": "¿Puedes guardar mi lugar mientras cierro el libro?"
+    },
+    {
+      "id": "multilingual-089",
+      "category": "multilingual",
+      "language": "it",
+      "tags": ["italian"],
+      "text": "La luce del pomeriggio attraversava lentamente le tende."
+    },
+    {
+      "id": "multilingual-090",
+      "category": "multilingual",
+      "language": "pt",
+      "tags": ["portuguese", "diacritics"],
+      "text": "Amanhã, João levará três maçãs para a estação."
+    },
+    {
+      "id": "multilingual-091",
+      "category": "multilingual",
+      "language": "ru",
+      "tags": ["russian"],
+      "text": "После дождя над городом появилась яркая радуга."
+    },
+    {
+      "id": "multilingual-092",
+      "category": "multilingual",
+      "language": "mixed",
+      "tags": ["code-switching", "greeting"],
+      "text": "Mina said hello, bonjour, hola, and こんにちは to the arriving guests."
+    },
+    {
+      "id": "long-093",
+      "category": "long",
+      "language": "en",
+      "tags": ["long-sentence", "commas", "conjunctions"],
+      "text": "Before the morning train reached the coast, Nia checked the tickets, counted the bags, texted the host, found a quiet seat near the window, and opened the notebook where she had listed every stop in careful blue ink."
+    },
+    {
+      "id": "long-094",
+      "category": "long",
+      "language": "en",
+      "tags": ["long-sentence", "semicolon", "parentheses"],
+      "text": "The field test began under clear skies; by noon, however, a warm crosswind had shifted the markers, drained one battery, and carried a sheet of notes (fortunately only a duplicate) into the tall grass beyond the fence."
+    },
+    {
+      "id": "long-095",
+      "category": "long",
+      "language": "en",
+      "tags": ["long-sentence", "nested-quotation"],
+      "text": "When the moderator asked whether the team was ready, Arlo looked at the blinking console, remembered the technician's warning—“Do not restart it during calibration”—and calmly answered, “Give us exactly two more minutes.”"
+    },
+    {
+      "id": "long-096",
+      "category": "long",
+      "language": "en",
+      "tags": ["long-sentence", "abbreviations", "numbers"],
+      "text": "At 6:45 p.m. on Sept. 14, Dr. Vale recorded 18.6 °C, 42% humidity, a 3.2 m/s breeze, and battery level No. 4 at 87%, then signed the log and closed lab B."
+    },
+    {
+      "id": "long-097",
+      "category": "long",
+      "language": "mixed",
+      "tags": ["long-sentence", "unicode", "code-switching"],
+      "text": "The welcome display rotated through “Hello,” “Bonjour,” “Hola,” “Guten Tag,” and “こんにちは,” while a small arrow pointed visitors toward desks A–D, where maps, water, and translated schedules were available."
+    },
+    {
+      "id": "long-098",
+      "category": "long",
+      "language": "en",
+      "tags": ["long-sentence", "failure-boundary", "multiple-punctuation"],
+      "text": "If the narrator reaches the phrase “not yet,” pauses for the parenthetical note (which may take a moment), reads the three values—0.5, 1.25, and 10.0—and then encounters an ellipsis… playback must continue without duplicating, skipping, or joining the next sentence too early."
+    },
+    {
+      "id": "long-099",
+      "category": "long",
+      "language": "en",
+      "tags": ["long-sentence", "url", "email", "boundary"],
+      "text": "After reviewing the fictional page at https://example.org/reader?chapter=12, send a summary to qa@example.com, label the message “Test No. 99,” and wait for the automated reply before closing the app."
+    },
+    {
+      "id": "long-100",
+      "category": "long",
+      "language": "en",
+      "tags": ["long-sentence", "chapter-boundary", "terminal-quote"],
+      "text": "At the end of Chapter XII, the final line contains a date, 3 March 2031, an abbreviation, Capt., and a quoted command that must finish cleanly before the reader advances: “Close the red door.”"
+    }
+  ]
+}
