@@ -1,0 +1,13 @@
+Lantern does not bundle model weights in the APK.
+
+The optional on-device model download is pinned to two Qwen3-TTS 0.6B Q4_K_M
+GGUF artifacts from Serveurperso/Qwen3-TTS-GGUF at revision
+968442208ea86f312b6b67ac8ef0c1b551967e35. The underlying Qwen3-TTS model is
+published by Qwen under the Apache License 2.0.
+
+Upstream model and license information:
+https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base
+https://github.com/QwenLM/Qwen3-TTS
+
+GGUF artifact repository:
+https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF

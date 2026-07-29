@@ -417,6 +417,12 @@
       </div>
     </div>
     <div id="qwenCfg" hidden>
+      <div id="nativeQwenCfg" hidden>
+        <div class="set-row"><span>Local model</span><button class="ghost-btn" id="nativeQwenDownload" type="button">Download model</button></div>
+        <p class="hint" id="nativeQwenStatus">Checking the on-device Qwen3-TTS model…</p>
+        <p class="hint">The Android build downloads an approximately 884 MB, checksum-verified Q4 model once. EPUB text and generated speech stay on this device.</p>
+      </div>
+      <div id="remoteQwenCfg">
       <!-- real <label for> pairs: with only sibling spans the accessible name falls
            back to the placeholder, announcing the key field as just "optional" -->
       <div class="set-row"><label for="qwenUrl">Server</label><input id="qwenUrl" class="cfg-input" type="url" placeholder="https://your-pc.tail1234.ts.net" spellcheck="false" autocapitalize="none" autocorrect="off" autocomplete="off"></div>
@@ -424,6 +430,7 @@
       <div class="set-row"><label for="qwenVoice">Voice</label><input id="qwenVoice" class="cfg-input" placeholder="cherry" spellcheck="false" autocapitalize="none" autocorrect="off" autocomplete="off"></div>
       <div class="set-row"><label for="qwenKey">API key</label><input id="qwenKey" class="cfg-input" type="password" placeholder="optional" spellcheck="false" autocomplete="off"></div>
       <p class="hint">Qwen3-TTS needs a GPU, so it runs on a computer you own and Lantern streams the voice from it (an OpenAI-compatible <span class="mono">/v1/audio/speech</span> server, reachable over HTTPS with CORS enabled). On-device reading keeps working offline either way.</p>
+      </div>
     </div>
     <div class="set-row"><span>Speed</span>
       <div class="speeds" id="rSpeeds" role="group" aria-label="Playback speed">
@@ -443,8 +450,8 @@
 </div>
 
 <script>
-/* The whole app is one module whose first statements import from a CDN. If that
-   fetch fails (outage, captive portal, filtered host) the module body never runs,
+/* The whole app is one module. If an asset fails to load or the module throws,
+   the module body never finishes,
    route() never activates a view, and — since .view is display:none until .active —
    the page renders as a dead shell with zero diagnostics. Fail loudly instead.
    Classic script, placed before the module tag: module scripts are deferred, so
@@ -454,9 +461,8 @@
     if (document.querySelector(".view.active")) return; /* the module ran — nothing to report */
     var b = document.getElementById("banner"), t = document.getElementById("bannerText");
     if (!b || !t || !b.hidden) return;
-    t.innerHTML = "<b>Lantern couldn't finish loading.</b> Part of the app is fetched from " +
-      "<span class=\"mono\">cdn.jsdelivr.net</span> and that request failed. Check your connection " +
-      "or network filter, then reload.";
+    t.innerHTML = "<b>Lantern couldn't finish loading.</b> An app asset could not be opened. " +
+      "Close and reopen Lantern. If this continues, reinstall the app.";
     b.classList.add("error"); b.hidden = false;
     var a = document.getElementById("a11yAlert");
     if (a) a.textContent = t.textContent; /* the module never ran — announce here */
@@ -470,12 +476,28 @@
   addEventListener("load", function () { setTimeout(bootFailed, 4000); });
 })();
 </script>
+<script src="android-bridge-bootstrap.js"></script>
 <script type="module">
-import { KokoroTTS } from "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
-import { unzipSync, strFromU8 } from "https://cdn.jsdelivr.net/npm/fflate@0.8.3/esm/browser.js";
+import { unzipSync, strFromU8 } from "./vendor/fflate-0.8.3.js";
+import { createNativeTTSAdapter } from "./native-tts-adapter.js";
+
+const nativeTTS = createNativeTTSAdapter({ prepareTimeoutMs: 180_000 });
+const nativeAndroid = nativeTTS.available && globalThis.LanternNative?.platform === "android";
+let KokoroTTSClass = null;
+async function getKokoroTTS() {
+  if (nativeAndroid) throw new Error("Kokoro is disabled in the local-Qwen Android build");
+  if (!KokoroTTSClass) {
+    const module = await import("https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js");
+    KokoroTTSClass = module.KokoroTTS;
+  }
+  return KokoroTTSClass;
+}
 
 /* ---------------- element refs ---------------- */
 const $ = id => document.getElementById(id);
+const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[char]));
 const textEl = $("text"), countEl = $("count"), readBtn = $("readBtn"),
       banner = $("banner"), bannerText = $("bannerText"), bannerBar = $("bannerBar"), bannerFill = $("bannerFill"),
       player = $("player"), nowReading = $("nowReading"), statusLine = $("statusLine"),
@@ -495,6 +517,8 @@ const textEl = $("text"), countEl = $("count"), readBtn = $("readBtn"),
       fontMinus = $("fontMinus"), fontPlus = $("fontPlus"), fontVal = $("fontVal"),
       rVoice = $("rVoice"), rSpeeds = $("rSpeeds"),
       engineBtns = $("engineBtns"), kokoroCfg = $("kokoroCfg"), qwenCfg = $("qwenCfg"),
+      nativeQwenCfg = $("nativeQwenCfg"), remoteQwenCfg = $("remoteQwenCfg"),
+      nativeQwenDownload = $("nativeQwenDownload"), nativeQwenStatus = $("nativeQwenStatus"),
       qwenUrl = $("qwenUrl"), qwenVoice = $("qwenVoice"), qwenKey = $("qwenKey"), libVoiceBtn = $("libVoiceBtn"),
       qwenDraftNote = $("qwenDraftNote"), qwenDraftNoteText = $("qwenDraftNoteText"), qwenUseShown = $("qwenUseShown");
 
@@ -507,7 +531,7 @@ try {
   if (v && [...voiceSel.options].some(o => o.value === v)) voiceSel.value = v;
   const s = parseFloat(localStorage.getItem("lantern.speed"));
   if ([...speedsEl.children].some(b => parseFloat(b.dataset.s) === s)) speed = s;
-  if (localStorage.getItem("lantern.engine") === "qwen") engine = "qwen";
+  if (nativeAndroid || localStorage.getItem("lantern.engine") === "qwen") engine = "qwen";
   qwenServer = localStorage.getItem("lantern.qwenUrl") || "";
   qwenVoiceName = localStorage.getItem("lantern.qwenVoice") || "cherry";
   qwenApiKey = localStorage.getItem("lantern.qwenKey") || "";
@@ -786,7 +810,7 @@ function loadModel(quiet) {
   if (!cachedBefore && !quiet) showBanner(MODEL_CACHEABLE
     ? `<b>First run:</b> downloading the voice model (about 90 MB). It's stored on this device — after this, Lantern reads offline.`
     : `<b>Downloading the voice model (about 90 MB).</b> This address isn't HTTPS, so the browser can't keep the model between visits — it will download again next time. Use an HTTPS address (or localhost) to make it stick.`, { bar: true });
-  modelLoading = KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
+  modelLoading = getKokoroTTS().then(KokoroTTS => KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
     dtype: "q8",
     device: "wasm",
     progress_callback: p => {
@@ -802,7 +826,7 @@ function loadModel(quiet) {
           : `<b>Downloading voice model</b> — ${mb(loaded)} of ${mb(total)} MB.${MODEL_CACHEABLE ? " One time only." : ""}`;
       }
     },
-  }).then(m => {
+  })).then(m => {
     tts = m;
     if (!banner.hidden && !banner.classList.contains("error")) hideBanner();
     if (engine === "kokoro") setModelState("ready", "voice model ready"); /* don't clobber the chip if the user switched engines mid-download */
@@ -902,34 +926,158 @@ function normalizeServerUrl(v) {
   } catch { return ""; }
 }
 
+const NATIVE_MODEL_REVISION = "968442208ea86f312b6b67ac8ef0c1b551967e35";
+let nativeModelState = "checking";
+
+function renderNativeModelStatus(state, detail) {
+  nativeModelState = state;
+  if (!nativeAndroid) return;
+  const ready = state === "ready";
+  nativeQwenDownload.disabled = state === "loading" || ready;
+  nativeQwenDownload.textContent = ready ? "Model installed" : state === "downloading" ? "Cancel download" : "Download model";
+  nativeQwenStatus.textContent = detail || ({
+    ready: "Qwen3-TTS 0.6B Q4 is installed and available offline.",
+    downloading: "Downloading and verifying the local Qwen model…",
+    loading: "Loading the local Qwen model…",
+    notInstalled: "The local Qwen model has not been downloaded yet.",
+    failed: "The local Qwen model could not be prepared.",
+    checking: "Checking the on-device Qwen3-TTS model…",
+  }[state] || "Local Qwen model status is unavailable.");
+  if (engine === "qwen") {
+    setModelState(ready ? "ready" : state === "downloading" || state === "loading" ? "busy" : "", ready ? "qwen3-tts · local model" : nativeQwenStatus.textContent);
+  }
+}
+
+async function refreshNativeModelStatus() {
+  if (!nativeAndroid) return null;
+  try {
+    const status = await nativeTTS.model.status();
+    renderNativeModelStatus(status?.state || "notInstalled", status?.detail);
+    return status;
+  } catch (error) {
+    renderNativeModelStatus("failed", error.message || "Could not read local model status.");
+    return null;
+  }
+}
+
+if (nativeAndroid) {
+  nativeTTS.on("model.progress", event => {
+    const { loaded, total, file } = event.payload;
+    const percent = Math.max(0, Math.min(100, loaded / total * 100));
+    renderNativeModelStatus("downloading", `Downloading ${file || "model"} — ${percent.toFixed(1)}%`);
+    if (!banner.hidden && !banner.classList.contains("error")) {
+      bannerFill.style.width = `${percent.toFixed(1)}%`;
+      bannerText.innerHTML = `<b>Downloading local Qwen3-TTS</b> — ${percent.toFixed(1)}%`;
+    }
+  });
+  nativeTTS.on("model.ready", () => {
+    renderNativeModelStatus("ready");
+    if (!banner.hidden && !banner.classList.contains("error")) hideBanner();
+  });
+  nativeTTS.on("error", event => {
+    renderNativeModelStatus("failed", event.payload.message);
+    showBanner(`<b>Local Qwen3-TTS error.</b> ${escapeHtml(event.payload.message)}`, { error: true });
+  });
+  nativeQwenDownload.addEventListener("click", async () => {
+    if (nativeModelState === "ready" || nativeModelState === "loading") return;
+    if (nativeModelState === "downloading") {
+      try {
+        await nativeTTS.model.cancelDownload();
+        renderNativeModelStatus("notInstalled", "Download paused. Tap Download model to resume it later.");
+        if (!banner.hidden && !banner.classList.contains("error")) hideBanner();
+      } catch (error) {
+        showBanner(`<b>Could not cancel the local model download.</b> ${escapeHtml(error.message)}`, { error: true });
+      }
+      return;
+    }
+    renderNativeModelStatus("downloading", "Starting the verified 884 MB model download…");
+    showBanner(`<b>Downloading local Qwen3-TTS (about 884 MB).</b> Keep Lantern open; an interrupted download can resume.`, { bar: true });
+    bannerFill.style.width = "0%";
+    try {
+      const result = await nativeTTS.model.download({ revision: NATIVE_MODEL_REVISION });
+      if (result?.accepted === false) {
+        renderNativeModelStatus(
+          "notInstalled",
+          "The previous download is still stopping. Tap Download model again in a moment.",
+        );
+        if (!banner.hidden && !banner.classList.contains("error")) hideBanner();
+      }
+    } catch (error) {
+      renderNativeModelStatus("failed", error.message);
+      showBanner(`<b>Could not start the local model download.</b> ${escapeHtml(error.message)}`, { error: true });
+    }
+  });
+  refreshNativeModelStatus();
+}
+
+function nativeRequestHeader(payload) {
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  if (bytes.length > 16_384) throw new Error("sentence is too large for local synthesis");
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const encoded = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  if (encoded.length > 16_384) throw new Error("sentence is too large for local synthesis");
+  return encoded;
+}
+
+let nativeSynthesisSequence = 0;
+function nextNativeSynthesisRequestId() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function")
+    return `speech-${globalThis.crypto.randomUUID()}`;
+  return `speech-${Date.now()}-${++nativeSynthesisSequence}`;
+}
+
 /* cfg defaults are evaluated at CALL time, so the reader (which restarts/parks via
    readerSettingsChanged on every commit) keeps reading live globals, while the paste
    stream passes a per-session snapshot */
 async function qwenSynthesize(text, signal, spd = speed,
     cfg = { server: qwenServer, voice: qwenVoiceName, key: qwenApiKey }) {
-  const base = normalizeServerUrl(cfg.server);
+  const base = nativeAndroid ? location.origin + "/native" : normalizeServerUrl(cfg.server);
   if (!base) throw new Error("no Qwen3-TTS server configured");
   /* a black-holed server must never hang a pump: hard timeout + caller abort */
   const ctl = new AbortController();
+  const synthesisRequestId = nativeAndroid ? nextNativeSynthesisRequestId() : null;
+  let cancellationSent = false;
+  const cancelNativeSynthesis = () => {
+    if (!nativeAndroid || !synthesisRequestId || cancellationSent) return;
+    cancellationSent = true;
+    nativeTTS.tts.cancelSynthesis(synthesisRequestId, { timeoutMs: 5_000 }).catch(() => {});
+  };
+  const abortRequest = () => {
+    ctl.abort();
+    cancelNativeSynthesis();
+  };
   let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, 30000);
-  const onOuter = () => ctl.abort();
+  const timeoutMs = nativeAndroid ? 180000 : 30000;
+  const timer = setTimeout(() => { timedOut = true; abortRequest(); }, timeoutMs);
+  const onOuter = abortRequest;
   if (signal) { if (signal.aborted) onOuter(); else signal.addEventListener("abort", onOuter, { once: true }); }
   try {
-    const headers = { "content-type": "application/json" };
-    if (cfg.key) headers.authorization = "Bearer " + cfg.key;
+    const headers = nativeAndroid
+      ? { "X-Lantern-Qwen-Request": nativeRequestHeader({ synthesisRequestId, text, speed: spd, language: "english" }) }
+      : { "content-type": "application/json" };
+    if (!nativeAndroid && cfg.key) headers.authorization = "Bearer " + cfg.key;
     const res = await fetch(base + "/v1/audio/speech", {
-      method: "POST",
+      method: nativeAndroid ? "GET" : "POST",
       headers,
-      body: JSON.stringify({ model: "qwen3-tts", input: text, voice: cfg.voice || "cherry", speed: spd, response_format: "wav" }),
+      body: nativeAndroid ? undefined : JSON.stringify({ model: "qwen3-tts", input: text, voice: cfg.voice || "cherry", speed: spd, response_format: "wav" }),
+      cache: nativeAndroid ? "no-store" : "default",
       signal: ctl.signal,
     });
-    if (!res.ok) throw Object.assign(new Error("TTS server responded " + res.status), { qwenStatus: res.status });
+    if (!res.ok) {
+      let nativeMessage = "";
+      if (nativeAndroid) try { nativeMessage = (await res.text()).slice(0, 500); } catch {}
+      throw Object.assign(new Error(nativeMessage || "TTS server responded " + res.status), {
+        qwenStatus: res.status,
+        qwenNative: nativeAndroid,
+        qwenNativeMessage: nativeMessage,
+      });
+    }
     const abuf = await res.arrayBuffer();
     try { return wavToFloat32(abuf, SR); }
-    catch (e) { throw Object.assign(e, { qwenBadAudio: true }); }
+    catch (e) { throw Object.assign(e, { qwenBadAudio: true, qwenNative: nativeAndroid }); }
   } catch (err) {
-    if (timedOut && !(signal && signal.aborted)) throw Object.assign(new Error("TTS server timed out"), { qwenTimeout: true });
+    if (timedOut && !(signal && signal.aborted)) throw Object.assign(new Error(nativeAndroid ? "Local synthesis timed out" : "TTS server timed out"), { qwenTimeout: true, qwenNative: nativeAndroid });
     throw err;
   } finally {
     clearTimeout(timer);
@@ -941,6 +1089,13 @@ async function qwenSynthesize(text, signal, spd = speed,
    the server answered with a 401. Every interpolated value is app-authored. */
 function qwenErrorHtml(err, retryHint) {
   const st = err && err.qwenStatus, tail = retryHint ? " " + retryHint : "";
+  if (err && err.qwenNative) {
+    const detail = err.qwenNativeMessage || err.message;
+    if (err.qwenTimeout) return `<b>Local Qwen3-TTS took too long to generate this sentence.</b> Try again after the phone cools down, or use a shorter sentence.` + tail;
+    if (err.qwenBadAudio) return `<b>Local Qwen3-TTS returned unusable audio.</b> Reload the model and try again.` + tail;
+    if (st === 409) return `<b>The local Qwen3-TTS model is not ready.</b> Open Voice settings to download or reload it.` + tail;
+    return `<b>Local Qwen3-TTS could not generate this sentence.</b>${detail ? " " + escapeHtml(detail) : ""}` + tail;
+  }
   if (st === 401 || st === 403) return `<b>Your Qwen3-TTS server rejected the API key (${st}).</b> Check the API key in Voice settings — the address itself is working.` + tail;
   if (st === 404) return `<b>Your server answered, but has no <span class="mono">/v1/audio/speech</span> endpoint (404).</b> Check the address path.` + tail;
   if (st) return `<b>Your Qwen3-TTS server reported an error (${st}).</b> Lantern reached it — check the server's own logs.` + tail;
@@ -988,6 +1143,19 @@ async function* sentenceAudioStream(text, signal) {
 
 async function ensureEngineReady() {
   if (engine === "qwen") {
+    if (nativeAndroid) {
+      renderNativeModelStatus("loading");
+      try {
+        await nativeTTS.tts.prepare({ modelRevision: NATIVE_MODEL_REVISION });
+        renderNativeModelStatus("ready");
+        return;
+      } catch (error) {
+        await refreshNativeModelStatus();
+        const message = error && error.message ? escapeHtml(error.message) : "Download the local model in Voice settings, then try again.";
+        showBanner(`<b>Local Qwen3-TTS is not ready.</b> ${message}`, { error: true });
+        throw Object.assign(error instanceof Error ? error : new Error(String(error)), { qwenNative: true });
+      }
+    }
     if (!normalizeServerUrl(qwenServer)) {
       showBanner(`<b>Set your Qwen3-TTS server first.</b> Open Voice settings and enter the server address.`, { error: true });
       throw new Error("no server");
@@ -1007,7 +1175,9 @@ function withGenLock(fn) {
   return run;
 }
 
-const genLabel = () => engine === "qwen" ? "streaming from your Qwen3-TTS server" : "generating on-device";
+const genLabel = () => engine === "qwen"
+  ? (nativeAndroid ? "generating with local Qwen3-TTS" : "streaming from your Qwen3-TTS server")
+  : "generating on-device";
 /* the done-live line is TERMINAL — nothing rewrites it until live playback drains
    into switchToFile — so it must not hardcode "still playing": synthesis deliberately
    continues through a pause (togglePlay only suspends the context), and a session
@@ -1121,7 +1291,9 @@ function quickReadMeta(text) {
   const voiceOpt = voiceSel.selectedOptions[0];
   return {
     title: (excerpt(text === undefined ? textEl.value : text, 7) || "Lantern") + "…",
-    artist: engine === "qwen"
+    artist: nativeAndroid && engine === "qwen"
+      ? "Local Qwen3-TTS 0.6B"
+      : engine === "qwen"
       ? "Qwen3-TTS · " + (qwenVoiceName || "cherry")
       : (voiceOpt ? voiceOpt.textContent.split("·")[0].trim() : "Kokoro"),
   };
@@ -1833,12 +2005,43 @@ function parseEpub(arrayBuf) {
    library
    ================================================================ */
 let coverURLs = [];
+/* A pending library render can detach the focused card during openReader's IDB
+   awaits. Preserve the keyboard-navigation intent independently of that node. */
+let pendingReaderEntryFocus = false;
+/* renderLibrary can finish between two keyboard events (focus, then Enter). Replacing
+   the shelf in that window used to strand focus on <body>, so the Enter never reached
+   a book at all. Capture the live shelf control immediately before a synchronous DOM
+   replacement and re-anchor to its replacement (or the nearest surviving card).
+   Never restore after a view change, and never steal focus another handler claimed. */
+function captureShelfFocus() {
+  const focused = document.activeElement;
+  const control = focused && focused.closest && focused.closest(".book-open, .b-del");
+  const card = control && control.closest(".book");
+  if (activeView !== "library" || !card || !shelf.contains(control)) return null;
+  return {
+    bookId: card.dataset.id,
+    slot: [...shelf.children].indexOf(card),
+    selector: control.classList.contains("b-del") ? ".b-del" : ".book-open",
+  };
+}
+function restoreShelfFocus(saved) {
+  if (!saved || activeView !== "library" ||
+      (document.activeElement && document.activeElement !== document.body)) return;
+  const cards = [...shelf.children];
+  const same = cards.find(card => card.dataset.id === saved.bookId);
+  const card = same || cards[Math.min(Math.max(saved.slot, 0), cards.length - 1)];
+  const target = (card && card.querySelector(saved.selector)) || addBookBtn;
+  if (target && target.isConnected && target.offsetParent !== null)
+    target.focus({ preventScroll: true });
+}
 /* the empty-shelf line repeats the footer's privacy claim, so it must be engine-aware
    for the same reason: under the server engine every sentence leaves the device. The
    storage-error path also overwrites this element — data-copy records whose text is
    in it, so an engine switch can never wipe a live error message, and a recovered
    (retryable) IDB failure can't leave "storage is broken" on a healthy empty shelf. */
-const libEmptyHtml = () => `Your shelf is empty.<br>Add a DRM-free EPUB and Lantern will read it aloud${
+const libEmptyHtml = () => nativeAndroid
+  ? `Your shelf is empty.<br>Add a DRM-free EPUB and Lantern will read it aloud — entirely on this device.`
+  : `Your shelf is empty.<br>Add a DRM-free EPUB and Lantern will read it aloud${
   engine === "qwen" ? " — with the voice streamed from your server" : " — entirely on this device"}.`;
 function setLibEmptyCopy() {
   const html = libEmptyHtml(); /* app-authored constant, no user data */
@@ -1851,16 +2054,17 @@ async function renderLibrary() {
   try { [books, progress] = await Promise.all([dbAllBooks(), dbAllProgress()]); }
   catch (err) {
     console.error(err);
-    shelf.innerHTML = "";
+    const savedFocus = captureShelfFocus();
+    shelf.replaceChildren();
     libEmpty.hidden = false;
     libEmpty.textContent = "Couldn't open Lantern's book storage. Private browsing can block it — try a normal window.";
     libEmpty.dataset.copy = "error";
+    restoreShelfFocus(savedFocus);
     return;
   }
   const pmap = new Map(progress.map(p => [p.bookId, p]));
-  for (const u of coverURLs) URL.revokeObjectURL(u);
-  coverURLs = [];
-  shelf.innerHTML = "";
+  const nextShelf = document.createDocumentFragment();
+  const nextCoverURLs = [];
   setLibEmptyCopy();
   libEmpty.hidden = books.length > 0;
   books.sort((a, b) => ((pmap.get(b.id) || {}).updatedAt || b.addedAt || 0) - ((pmap.get(a.id) || {}).updatedAt || a.addedAt || 0));
@@ -1873,13 +2077,16 @@ async function renderLibrary() {
        presentational-children rule over the nested Remove button and hide it.) */
     const open = document.createElement("button");
     open.type = "button"; open.className = "book-open";
-    open.addEventListener("click", () => { location.hash = "read/" + encodeURIComponent(b.id); });
+    open.addEventListener("click", () => {
+      pendingReaderEntryFocus = document.activeElement === open;
+      location.hash = "read/" + encodeURIComponent(b.id);
+    });
     card.appendChild(open);
 
     const cover = document.createElement("div"); cover.className = "cover";
     if (b.cover) {
       const img = document.createElement("img");
-      const u = URL.createObjectURL(b.cover); coverURLs.push(u);
+      const u = URL.createObjectURL(b.cover); nextCoverURLs.push(u);
       img.src = u; img.alt = "";
       cover.appendChild(img);
     } else {
@@ -1916,6 +2123,7 @@ async function renderLibrary() {
       clearTimeout(delTimer);
       const title = b.title, slot = [...shelf.children].indexOf(card);
       const viewAtStart = activeView;
+      const hadFocusAtConfirmation = document.activeElement === del;
       try { await dbDeleteBook(b.id); }
       catch (err) {
         console.error(err);
@@ -1930,22 +2138,29 @@ async function renderLibrary() {
         return;
       }
       await renderLibrary();
-      /* renderLibrary's shelf.innerHTML = "" unrenders the very button this click came
-         from, so focus would drop to <body> — the same hazard closeSheets, markTocCurrent,
-         qwenUseShown and collapseQwenDraftNote all guard. Land on the Remove of the card
-         that took this one's place (else the last card, else "Add a book"), which keeps
-         the Tab order the user had. The removal is otherwise imperceptible to AT — the
-         control simply stops existing — so say it happened. */
+      /* renderLibrary normally preserves the focused Remove at its replaceChildren
+         commit. Keep this fallback for a keyboard activation that still lost focus,
+         but only while the initiating view remains active and nobody claimed focus
+         during either await. A user can move to Add/Voice/another card while IDB is
+         deleting; completion must never steal that newer choice. */
       const cards = shelf.children;
       const land = cards.length
         ? cards[Math.min(slot, cards.length - 1)].querySelector(".b-del")
         : addBookBtn;
-      if (land && land.isConnected && land.offsetParent !== null) land.focus();
+      if (hadFocusAtConfirmation && activeView === viewAtStart &&
+          (!document.activeElement || document.activeElement === document.body) &&
+          land && land.isConnected && land.offsetParent !== null) land.focus();
       announce(`Removed ${title}.`);
     });
     card.appendChild(del);
-    shelf.appendChild(card);
+    nextShelf.appendChild(card);
   }
+  const savedFocus = captureShelfFocus();
+  const oldCoverURLs = coverURLs;
+  shelf.replaceChildren(nextShelf);
+  coverURLs = nextCoverURLs;
+  for (const u of oldCoverURLs) URL.revokeObjectURL(u);
+  restoreShelfFocus(savedFocus);
 }
 
 addBookBtn.addEventListener("click", () => bookFile.click());
@@ -2746,23 +2961,30 @@ for (const c of rSpeeds.children) setOnState(c, parseFloat(c.dataset.s) === spee
 
 /* ---------------- voice engine settings ---------------- */
 function applyEngineUI() {
+  if (nativeAndroid) engine = "qwen";
   for (const b of engineBtns.children) setOnState(b, b.dataset.e === engine);
-  kokoroCfg.hidden = engine !== "kokoro";
+  engineBtns.closest(".set-row").hidden = nativeAndroid;
+  kokoroCfg.hidden = nativeAndroid || engine !== "kokoro";
   qwenCfg.hidden = engine !== "qwen";
+  nativeQwenCfg.hidden = !nativeAndroid || engine !== "qwen";
+  remoteQwenCfg.hidden = nativeAndroid || engine !== "qwen";
   voiceSel.disabled = engine === "qwen"; /* the kokoro voice list is meaningless on the server engine */
   if (engine === "qwen") setModelState(normalizeServerUrl(qwenServer) ? "ready" : "", normalizeServerUrl(qwenServer) ? "qwen3-tts · server voice" : "qwen3-tts · set server address");
   else if (tts) setModelState("ready", "voice model ready");
   else if (modelLoading) setModelState("busy", modelBusyText || "downloading voice model"); /* restore the load-in-progress chip after an engine round-trip */
   else setModelState("", "voice model not loaded");
+  if (nativeAndroid) renderNativeModelStatus(nativeModelState);
   /* "runs entirely on this device" is a privacy claim — it must not stand while
      the server engine is streaming every sentence to the user's machine */
   appFooter.textContent = engine === "qwen"
     ? "Qwen3-TTS · streamed from your server"
     : "Runs entirely on this device · Kokoro-82M · English";
+  if (nativeAndroid) appFooter.textContent = "Runs entirely on this device · Qwen3-TTS 0.6B Q4";
   refreshLibEmptyCopy(); /* the shelf's empty-state carries the same claim as the footer */
   updateQwenDraftNote(); /* engine visibility is part of the note's condition */
 }
 function setEngine(e) {
+  if (nativeAndroid && e !== "qwen") return;
   if (engine === e) return;
   engine = e;
   try { localStorage.setItem("lantern.engine", e); } catch {}
@@ -3314,6 +3536,9 @@ pasteVoiceBtn.addEventListener("click", () => openSheet(setSheet));
 
 /* ---------------- open a book ---------------- */
 async function openReader(id) {
+  const shouldLandReaderFocus = pendingReaderEntryFocus ||
+    (activeView === "library" && viewLibrary.contains(document.activeElement));
+  pendingReaderEntryFocus = false;
   const wantHash = location.hash;
   /* fetch everything BEFORE touching reader state: an await between rd.book and
      rd.ch/rd.si would let a navigation-triggered teardown save one book's
@@ -3372,6 +3597,14 @@ async function openReader(id) {
     if (!bannerIsQwenHold()) clearErrorBanner();
   }
   showView("reader");
+  /* renderLibrary may have replaced the focused card during the awaits above,
+     making showView's synchronous containment check too late. Re-anchor only
+     when that captured keyboard focus was actually lost and nobody else claimed it. */
+  if (shouldLandReaderFocus &&
+      (!document.activeElement || document.activeElement === document.body) &&
+      backBtn.isConnected && backBtn.offsetParent !== null) {
+    backBtn.focus({ preventScroll: true });
+  }
   /* the reader drives a MediaStream, which iOS mutes under the ring/silent switch.
      Show this the moment the book opens, never from readerPlayFrom: the hint is a
      flex child of .r-player inside a fixed-height column, so un-hiding it inside
@@ -3476,7 +3709,7 @@ window.addEventListener("hashchange", route);
 route();
 
 /* ---------------- service worker (offline shell) ---------------- */
-if ("serviceWorker" in navigator) {
+if (!nativeAndroid && "serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
 }
 </script>

@@ -1,0 +1,15 @@
+/.gradle/
+/.runtime-verification/
+/.idea/
+/.kotlin/
+/build/
+/app/build/
+/app/.cxx/
+/app/.externalNativeBuild/
+/captures/
+/local.properties
+*.iml
+*.jks
+*.keystore
+*.p12
+keystore.properties
