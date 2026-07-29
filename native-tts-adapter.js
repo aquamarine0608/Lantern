@@ -5,8 +5,9 @@
  * model bytes, generated PCM, playback, and file spooling; none of those buffers
  * cross the WKWebView JavaScript bridge.
  *
- * Native receives requests through:
- *   window.webkit.messageHandlers.lantern.postMessage(request)
+ * Native receives requests through the platform-neutral `LanternNative.send`
+ * transport when present, with WKWebView's message handler retained as a
+ * compatibility fallback.
  *
  * Command replies are the Promise value returned by WKScriptMessageHandlerWithReply.
  * Every request also includes a unique `eventReceiver` global which native uses
@@ -28,6 +29,7 @@ const KNOWN_EVENTS = new Set([
 ]);
 
 const PCM_KEYS = /^(?:pcm|samples|audio|audioData|audioBuffer|waveform)$/i;
+const MAX_MODEL_EVENT_OWNERS = 16;
 let clientSequence = 0;
 
 const isPlainObject = value => {
@@ -63,6 +65,10 @@ function assertControlPayload(value, label, seen = new Set()) {
 }
 
 function bridgeHandler(target = globalThis) {
+  const native = target && target.LanternNative;
+  if (native && typeof native.send === "function") {
+    return { postMessage: request => native.send(request) };
+  }
   const handler = target && target.webkit && target.webkit.messageHandlers &&
     target.webkit.messageHandlers.lantern;
   return handler && typeof handler.postMessage === "function" ? handler : null;
@@ -195,7 +201,7 @@ export class NativeTTSAdapter {
     this._requestSequence = 0;
     this._sessionSequence = 0;
     this._activeSessionId = null;
-    this._modelEventRequestId = null;
+    this._modelEventRequestIds = new Set();
     this._disposed = false;
 
     const random = target.crypto && typeof target.crypto.randomUUID === "function"
@@ -216,11 +222,11 @@ export class NativeTTSAdapter {
       // Native acknowledges initiation quickly; progress and completion arrive as events.
       download: (params = {}, controls) => this._request("model.download", params, { ...controls, modelEvents: true }),
       cancelDownload: controls => {
-        this._modelEventRequestId = null;
+        this._modelEventRequestIds.clear();
         return this._request("model.cancelDownload", {}, controls);
       },
       delete: controls => {
-        this._modelEventRequestId = null;
+        this._modelEventRequestIds.clear();
         return this._request("model.delete", {}, controls);
       },
     });
@@ -240,6 +246,12 @@ export class NativeTTSAdapter {
         if (!Number.isFinite(speed) || speed <= 0)
           return Promise.reject(new NativeTTSProtocolError("speed must be a positive finite number"));
         return this._request("tts.setSpeed", { speed }, controls);
+      },
+      cancelSynthesis: (synthesisRequestId, controls) => {
+        if (typeof synthesisRequestId !== "string" ||
+            !/^[A-Za-z0-9._:-]{1,128}$/.test(synthesisRequestId))
+          return Promise.reject(new NativeTTSProtocolError("synthesisRequestId is invalid"));
+        return this._request("tts.cancelSynthesis", { synthesisRequestId }, controls);
       },
     });
   }
@@ -291,7 +303,11 @@ export class NativeTTSAdapter {
     const sessionId = controls.sessionId === undefined ? null : controls.sessionId;
     if (sessionId !== null && (typeof sessionId !== "string" || !sessionId))
       return Promise.reject(new NativeTTSProtocolError("sessionId must be a non-empty string or null"));
-    if (controls.modelEvents) this._modelEventRequestId = requestId;
+    if (controls.modelEvents) {
+      if (this._modelEventRequestIds.size >= MAX_MODEL_EVENT_OWNERS)
+        this._modelEventRequestIds.delete(this._modelEventRequestIds.keys().next().value);
+      this._modelEventRequestIds.add(requestId);
+    }
 
     const message = {
       protocol: NATIVE_TTS_PROTOCOL,
@@ -315,7 +331,7 @@ export class NativeTTSAdapter {
         fn(value);
       };
       const fail = error => {
-        if (this._modelEventRequestId === requestId) this._modelEventRequestId = null;
+        this._modelEventRequestIds.delete(requestId);
         finish(reject, error);
       };
       const onAbort = () => fail(new NativeTTSAbortError(method));
@@ -342,7 +358,12 @@ export class NativeTTSAdapter {
         replyPromise.then(raw => {
           const pending = this._pending.get(requestId);
           if (!pending) return; // timed out, aborted, disposed, or otherwise superseded
-          try { pending.resolve(validateReply(raw, requestId, method)); }
+          try {
+            const result = validateReply(raw, requestId, method);
+            if (controls.modelEvents && result && result.accepted === false)
+              this._modelEventRequestIds.delete(requestId);
+            pending.resolve(result);
+          }
           catch (error) { pending.reject(error); }
         }, error => {
           const pending = this._pending.get(requestId);
@@ -361,7 +382,12 @@ export class NativeTTSAdapter {
   }
 
   _prepare(params, controls) {
-    const requestControls = { ...(controls || {}), modelEvents: true };
+    const requestControls = { ...(controls || {}) };
+    // iOS can install/load from prepare and reports model events through that
+    // request. Android prepare is reply-only; registering it would leak owners
+    // and could eventually evict a long-running download receiver.
+    if (!(this._target.LanternNative && this._target.LanternNative.platform === "android"))
+      requestControls.modelEvents = true;
     if (requestControls.timeoutMs === undefined) requestControls.timeoutMs = this._prepareTimeoutMs;
     return this._request("tts.prepare", params, requestControls);
   }
@@ -421,7 +447,7 @@ export class NativeTTSAdapter {
     const isModel = raw.event === "model.progress" || raw.event === "model.ready";
     const isModelError = raw.event === "error" && !hasSession;
     const isSession = raw.event.startsWith("tts.") || raw.event === "reader.sentenceStarted";
-    if ((isModel || isModelError) && (!requestId || requestId !== this._modelEventRequestId)) return;
+    if ((isModel || isModelError) && (!requestId || !this._modelEventRequestIds.has(requestId))) return;
     if (isSession && (typeof raw.sessionId !== "string" || raw.sessionId !== this._activeSessionId)) return;
     if (raw.event === "error" && hasSession &&
         raw.sessionId !== this._activeSessionId) return;
@@ -433,8 +459,8 @@ export class NativeTTSAdapter {
       payload: raw.payload,
     });
     this._emit(raw.event, detail);
-    if (raw.event === "model.ready" && this._modelEventRequestId === requestId)
-      this._modelEventRequestId = null;
+    if ((raw.event === "model.ready" || isModelError) && requestId)
+      this._modelEventRequestIds.delete(requestId);
   }
 
   dispose() {
@@ -445,7 +471,7 @@ export class NativeTTSAdapter {
     this._pending.clear();
     this._listeners.clear();
     this._activeSessionId = null;
-    this._modelEventRequestId = null;
+    this._modelEventRequestIds.clear();
     if (this._target[this._receiver] === this._receiveBound) {
       try { delete this._target[this._receiver]; } catch {}
     }

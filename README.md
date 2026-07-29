@@ -2,7 +2,39 @@
 
 A single-page web app that turns DRM-free **EPUBs** — and any pasted text — into listening material, with the AI voice (Kokoro-82M) running entirely on your device via WebAssembly. On the on-device engine nothing is uploaded anywhere, and after the first run it works fully offline, airplane mode included. (The optional Qwen3-TTS engine is the one exception — it sends each sentence to the server you configure; see [Voice engines](#voice-engines).)
 
-**App files:** `index.html` · `sw.js` · `manifest.webmanifest` · `icon-180.png` · `icon-512.png` (the `tests/` folder is a dev-only end-to-end suite — deploying it does no harm, but it isn't needed)
+**Deployable app files:** `index.html`, `sw.js`, `manifest.webmanifest`, `icon-180.png`, `icon-512.png`, `android-bridge-bootstrap.js`, `native-tts-adapter.js`, and the complete `vendor/` directory. Keep their relative paths unchanged. (The `tests/`, `android/`, and `ios/` directories are development/native-project sources and are not needed for the browser deployment.)
+
+## Android app: local Qwen3-TTS, no Apple tooling
+
+The `android/` directory is a native Android sibling of Lantern. It keeps the
+existing EPUB library and reader UI, but intentionally disables Kokoro and the
+remote Qwen server fields. Speech is generated locally with the pinned
+Qwen3-TTS 0.6B Q4_K_M GGUF runtime through Android NDK/JNI.
+
+- Android 12 or newer, `arm64-v8a` only.
+- The APK contains no model weights. On first use, Lantern downloads two pinned
+  files (about 884 MB total), verifies their exact sizes and SHA-256 hashes, and
+  atomically installs them in private, non-backed-up app storage.
+- EPUB files, text, and generated WAV audio remain on the device. Internet
+  permission is used only for the explicit model download.
+- The CPU runtime and model path are real, but sustained real-time performance,
+  heat, and battery use still require testing on each physical Android device.
+  Do not treat desktop/CUDA Qwen latency claims as phone benchmarks.
+
+Build and sideload it from Windows—no Mac, App Store, signing subscription, or
+seven-day refresh is required:
+
+```powershell
+git submodule update --init --recursive
+cd android
+.\gradlew.bat --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
+# Align and sign the release with your private personal key, then:
+adb install -r app\build\outputs\apk\release\lantern-release.apk
+```
+
+See [`android/README.md`](android/README.md) for the pinned JDK/SDK/NDK versions,
+Windows setup, one-time personal signing-key steps, native revision, model
+boundary, and device validation commands.
 
 ## What it does
 
@@ -13,6 +45,10 @@ A single-page web app that turns DRM-free **EPUBs** — and any pasted text — 
 - **Two voice engines** — the on-device Kokoro voice (default, fully offline), or **Qwen3-TTS** streamed from a server you own. Nine hand-picked Kokoro voices (American & British), speeds from 0.8× to 1.5×.
 
 ## Voice engines
+
+The two choices below describe the browser/PWA build. The Android APK uses a
+third, platform-specific path: local Qwen3-TTS 0.6B Q4 only, with Kokoro and the
+remote server configuration hidden.
 
 **On-device (default).** Kokoro-82M runs inside the browser via WebAssembly. Private, offline after the first model download, works everywhere.
 
@@ -29,7 +65,7 @@ Reading, highlighting, resume, and the player all work identically on either eng
 Lantern needs to be served over HTTPS (that's what lets the browser cache the 90 MB model and run offline). GitHub Pages is the fastest free way:
 
 1. On github.com, create a new public repo (e.g. `lantern`).
-2. Upload the 5 app files ("Add file → Upload files" works — no git needed).
+2. Upload every file and directory listed under **Deployable app files** above ("Add file → Upload files" works — no git needed). Preserve the `vendor/` directory name.
 3. Repo **Settings → Pages** → Source: "Deploy from a branch" → `main`, `/ (root)` → Save.
 4. Wait ~1 minute, open `https://<you>.github.io/lantern/` in **Safari** on your phone.
 5. Tap **Share → Add to Home Screen**. It installs like an app with the Lantern icon.

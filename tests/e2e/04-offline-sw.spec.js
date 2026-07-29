@@ -91,11 +91,13 @@ test.describe("service worker and offline", () => {
     await expect(page.locator("#readBtn")).toBeVisible(); // the app, not PNG bytes
   });
 
-  test("a failed CDN import on the first visit shows an actionable error, not a dead page", async ({ page }) => {
-    await setCdnOffline(true); // no service worker yet, no HTTP cache: the module import fails outright
+  test("the first-visit shell loads when the optional Kokoro CDN is unavailable", async ({ page }) => {
+    // EPUB parsing and Android local-Qwen boot assets are local. Kokoro is fetched
+    // lazily only when the browser build first asks it to synthesize.
+    await setCdnOffline(true);
     await page.goto("/");
-    await expect(page.locator("#bannerText")).toContainText("couldn't finish loading", { timeout: 10_000 });
-    await expect(page.locator("#banner")).toBeVisible();
+    await expect(page.locator("#addBookBtn")).toBeVisible();
+    await expect(page.locator("#banner")).toBeHidden();
   });
 
   test("a service worker update carries runtime-cached CDN assets forward", async ({ page, mockTTS }) => {

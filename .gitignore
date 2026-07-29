@@ -1,1 +1,3 @@
 test-results/
+tests/debug.log
+.tools/

@@ -91,6 +91,114 @@ test.describe("native TTS bridge adapter", () => {
     await openModulePage(page);
   });
 
+  test("uses the platform-neutral Android transport before the WKWebView fallback", async ({ page }) => {
+    await page.evaluate(() => {
+      window.__ANDROID_MESSAGES__ = [];
+      Object.defineProperty(window, "LanternNative", {
+        configurable: true,
+        value: {
+          platform: "android",
+          send(request) {
+            window.__ANDROID_MESSAGES__.push(request);
+            return Promise.resolve({
+              protocol: "lantern.native-tts",
+              version: 1,
+              type: "reply",
+              requestId: request.requestId,
+              ok: true,
+              result: { state: "ready", transport: "android" },
+            });
+          },
+        },
+      });
+      Object.defineProperty(window, "webkit", {
+        configurable: true,
+        value: { messageHandlers: { lantern: { postMessage() { throw new Error("WK fallback used"); } } } },
+      });
+    });
+    await createAdapter(page);
+
+    const result = await page.evaluate(async () => {
+      const status = await window.__NATIVE_ADAPTER__.model.status();
+      await window.__NATIVE_ADAPTER__.tts.prepare();
+      return {
+        status,
+        modelEventOwners: window.__NATIVE_ADAPTER__._modelEventRequestIds.size,
+        messages: window.__ANDROID_MESSAGES__,
+      };
+    });
+
+    expect(result.status).toEqual({ state: "ready", transport: "android" });
+    expect(result.modelEventOwners).toBe(0);
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[0].method).toBe("model.status");
+    expect(result.messages[1].method).toBe("tts.prepare");
+  });
+
+  test("Android bootstrap correlates native replies and forwards model events", async ({ page }) => {
+    await page.evaluate(() => {
+      const host = {
+        messages: [],
+        postMessage(raw) {
+          const request = JSON.parse(raw);
+          this.messages.push(request);
+          queueMicrotask(() => this.onmessage({ data: JSON.stringify({
+            protocol: "lantern.native-tts",
+            version: 1,
+            type: "reply",
+            requestId: request.requestId,
+            ok: true,
+            result: { accepted: true },
+          }) }));
+        },
+      };
+      Object.defineProperty(window, "LanternNativeHost", { configurable: true, value: host });
+      window.__BOOTSTRAP_EVENTS__ = [];
+      window.__bootstrapReceiver = event => window.__BOOTSTRAP_EVENTS__.push(event);
+    });
+    await page.addScriptTag({ url: "/android-bridge-bootstrap.js" });
+
+    const reply = await page.evaluate(() => window.LanternNative.send({
+      protocol: "lantern.native-tts",
+      version: 1,
+      type: "request",
+      requestId: "android-bootstrap-1",
+      method: "model.download",
+      params: {},
+      eventReceiver: "__bootstrapReceiver",
+    }));
+    expect(reply).toMatchObject({ type: "reply", requestId: "android-bootstrap-1", ok: true });
+
+    // Ordinary request receivers must not evict a long-running download owner.
+    await page.evaluate(async () => {
+      await Promise.all(Array.from({ length: 300 }, (_, index) => window.LanternNative.send({
+        protocol: "lantern.native-tts",
+        version: 1,
+        type: "request",
+        requestId: `android-status-${index}`,
+        method: "model.status",
+        params: {},
+        eventReceiver: "__bootstrapReceiver",
+      })));
+    });
+
+    const events = await page.evaluate(() => {
+      window.LanternNativeHost.onmessage({ data: JSON.stringify({
+        protocol: "lantern.native-tts",
+        version: 1,
+        type: "event",
+        requestId: "android-bootstrap-1",
+        event: "model.progress",
+        sessionId: null,
+        payload: { loaded: 1, total: 2 },
+      }) });
+      return window.__BOOTSTRAP_EVENTS__;
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0].event).toBe("model.progress");
+    expect(await page.evaluate(() => window.LanternNativeHost.messages.length)).toBe(301);
+  });
+
   test("reports capability and exposes every versioned control-plane operation", async ({ page }) => {
     await installFakeBridge(page);
     await createAdapter(page);
@@ -113,6 +221,7 @@ test.describe("native TTS bridge adapter", () => {
       await adapter.tts.prepare({ modelRevision: "qwen-0.6b-test" });
       await adapter.tts.setVoice("Aiden");
       await adapter.tts.setSpeed(1.2);
+      await adapter.tts.cancelSynthesis("speech-contract-1");
 
       const first = await adapter.tts.start({ bookId: "book-1" });
       const firstStartIndex = window.__NATIVE_FAKE__.messages.length - 1;
@@ -151,7 +260,7 @@ test.describe("native TTS bridge adapter", () => {
     ]);
     expect(result.messages.map(m => m.method)).toEqual([
       "model.status", "model.download", "model.cancelDownload", "model.delete",
-      "tts.prepare", "tts.setVoice", "tts.setSpeed", "tts.start",
+      "tts.prepare", "tts.setVoice", "tts.setSpeed", "tts.cancelSynthesis", "tts.start",
       "tts.enqueue", "tts.pause", "tts.resume", "tts.start", "tts.stop",
     ]);
     for (const message of result.messages) {
@@ -460,6 +569,57 @@ test.describe("native TTS bridge adapter", () => {
     expect(result).toEqual([["progress", 1]]);
   });
 
+  test("a failed prepare does not steal an active download's model events", async ({ page }) => {
+    await installFakeBridge(page, { autoReply: false });
+    await createAdapter(page);
+
+    await page.evaluate(() => {
+      const adapter = window.__NATIVE_ADAPTER__;
+      window.__MODEL_OWNER_EVENTS__ = [];
+      adapter.on("model.progress", event => window.__MODEL_OWNER_EVENTS__.push(["progress", event.payload.loaded]));
+      adapter.on("model.ready", event => window.__MODEL_OWNER_EVENTS__.push(["ready", event.payload.modelRevision]));
+      window.__DOWNLOAD_START__ = adapter.model.download({ revision: "pinned-revision" });
+    });
+    await waitForMessages(page, 1);
+    await page.evaluate(() => window.__NATIVE_FAKE__.reply(0));
+    await page.evaluate(() => window.__DOWNLOAD_START__);
+
+    // Rejected duplicate starts never own events and must not evict the real download.
+    for (let duplicate = 0; duplicate < 20; duplicate++) {
+      await page.evaluate(() => {
+        window.__REJECTED_DOWNLOAD__ = window.__NATIVE_ADAPTER__.model.download();
+      });
+      await waitForMessages(page, duplicate + 2);
+      await page.evaluate(index => window.__NATIVE_FAKE__.reply(index, {
+        result: { accepted: false, inProgress: true },
+      }), duplicate + 1);
+      await page.evaluate(() => window.__REJECTED_DOWNLOAD__);
+    }
+
+    await page.evaluate(() => {
+      window.__PREPARE_WHILE_DOWNLOADING__ = window.__NATIVE_ADAPTER__.tts.prepare().then(
+        () => ({ ok: true }),
+        error => ({ ok: false, code: error.code }),
+      );
+    });
+    await waitForMessages(page, 22);
+    await page.evaluate(() => window.__NATIVE_FAKE__.reply(21, {
+      ok: false,
+      result: null,
+      error: { code: "MODEL_DOWNLOADING", message: "Download still active" },
+    }));
+    expect(await page.evaluate(() => window.__PREPARE_WHILE_DOWNLOADING__)).toEqual({
+      ok: false,
+      code: "MODEL_DOWNLOADING",
+    });
+
+    expect(await page.evaluate(() => {
+      window.__NATIVE_FAKE__.emit(0, "model.progress", { loaded: 5, total: 10 }, { sessionId: null });
+      window.__NATIVE_FAKE__.emit(0, "model.ready", { modelRevision: "pinned-revision" }, { sessionId: null });
+      return window.__MODEL_OWNER_EVENTS__;
+    })).toEqual([["progress", 5], ["ready", "pinned-revision"]]);
+  });
+
   test("never accepts or transports PCM payloads", async ({ page }) => {
     await installFakeBridge(page);
     await createAdapter(page);
@@ -526,5 +686,116 @@ test.describe("native TTS bridge adapter", () => {
       available: false,
       lateDelivered: true,
     });
+  });
+});
+
+test.describe("Android local-Qwen shell", () => {
+  test("aborting local speech sends a matching native cancellation request", async ({ page }) => {
+    await page.addInitScript(() => {
+      const host = {
+        requests: [],
+        postMessage(raw) {
+          const request = JSON.parse(raw);
+          this.requests.push(request);
+          const result = request.method === "model.status" || request.method === "tts.prepare"
+            ? { state: "ready", detail: "Local Qwen ready", modelRevision: "968442208ea86f312b6b67ac8ef0c1b551967e35", installed: true }
+            : request.method === "tts.cancelSynthesis"
+              ? { cancelled: true }
+              : { accepted: true };
+          queueMicrotask(() => this.onmessage({ data: JSON.stringify({
+            protocol: "lantern.native-tts",
+            version: 1,
+            type: "reply",
+            requestId: request.requestId,
+            ok: true,
+            result,
+          }) }));
+        },
+      };
+      Object.defineProperty(window, "LanternNativeHost", { configurable: false, value: host });
+    });
+
+    let releaseSpeechRoute;
+    let reportSpeechRequest;
+    const speechRequest = new Promise(resolve => { reportSpeechRequest = resolve; });
+    await page.route("**/native/v1/audio/speech", async route => {
+      const encoded = route.request().headers()["x-lantern-qwen-request"];
+      reportSpeechRequest(JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")));
+      await new Promise(resolve => { releaseSpeechRoute = resolve; });
+      await route.abort("aborted").catch(() => {});
+    });
+
+    await page.goto("/#paste");
+    await page.fill("#text", "The lantern keeps speaking until this request is stopped.");
+    await page.click("#readBtn");
+    const payload = await speechRequest;
+    expect(payload.synthesisRequestId).toMatch(/^speech-[A-Za-z0-9-]+$/);
+
+    await page.click("#readBtn");
+    await expect.poll(() => page.evaluate(() => {
+      const request = window.LanternNativeHost.requests.find(item => item.method === "tts.cancelSynthesis");
+      return request && request.params.synthesisRequestId;
+    })).toBe(payload.synthesisRequestId);
+
+    releaseSpeechRoute();
+    await expect(page.locator("#readBtn")).toHaveText("Read aloud");
+  });
+
+  test("locks the UI to local Qwen and supports resumable model download control", async ({ page }) => {
+    await page.addInitScript(() => {
+      const host = {
+        requests: [],
+        downloadStarts: 0,
+        postMessage(raw) {
+          const request = JSON.parse(raw);
+          this.requests.push(request);
+          let result;
+          if (request.method === "model.status") {
+            result = { state: "notInstalled", detail: null, modelRevision: null, installed: false };
+          } else if (request.method === "model.download") {
+            this.downloadStarts++;
+            result = this.downloadStarts === 1
+              ? { accepted: true }
+              : { accepted: false, inProgress: true };
+          } else {
+            result = { accepted: true };
+          }
+          queueMicrotask(() => this.onmessage({ data: JSON.stringify({
+            protocol: "lantern.native-tts",
+            version: 1,
+            type: "reply",
+            requestId: request.requestId,
+            ok: true,
+            result,
+          }) }));
+        },
+      };
+      Object.defineProperty(window, "LanternNativeHost", { configurable: false, value: host });
+    });
+
+    await page.goto("/#paste");
+    await expect(page.locator("#appFooter")).toContainText("Runs entirely on this device");
+    await expect(page.locator("#appFooter")).toContainText("Qwen3-TTS 0.6B Q4");
+
+    await page.locator("#pasteVoiceBtn").click();
+    await expect(page.locator("#engineBtns").locator("..")).toBeHidden();
+    await expect(page.locator("#kokoroCfg")).toBeHidden();
+    await expect(page.locator("#remoteQwenCfg")).toBeHidden();
+    await expect(page.locator("#nativeQwenCfg")).toBeVisible();
+    await expect(page.locator("#nativeQwenStatus")).toContainText("has not been downloaded");
+
+    const modelButton = page.locator("#nativeQwenDownload");
+    await modelButton.click();
+    await expect(modelButton).toHaveText("Cancel download");
+    await modelButton.click();
+    await expect(modelButton).toHaveText("Download model");
+    await expect(page.locator("#nativeQwenStatus")).toContainText("resume it later");
+    await modelButton.click();
+    await expect(modelButton).toHaveText("Download model");
+    await expect(page.locator("#nativeQwenStatus")).toContainText("previous download is still stopping");
+
+    const methods = await page.evaluate(() => window.LanternNativeHost.requests.map(request => request.method));
+    expect(methods).toEqual(["model.status", "model.download", "model.cancelDownload", "model.download"]);
+    expect(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length)).toBe(0);
   });
 });

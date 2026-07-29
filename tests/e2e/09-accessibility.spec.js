@@ -14,6 +14,37 @@ test.describe("accessibility and input", () => {
     await expect(page.locator(".book .b-del")).toHaveText("Remove");
   });
 
+  test("a shelf redraw between focus and Enter preserves the live book control", async ({ page }) => {
+    await page.goto("/");
+    await importEpub(page);
+    const id = await page.locator(".book").getAttribute("data-id");
+    await page.click("#pasteModeBtn");
+    await expect(page.locator("#viewPaste")).toBeVisible();
+
+    // Route synchronously starts renderLibrary, which pauses on IndexedDB. Focusing
+    // the existing card in the same task guarantees its replacement commits after
+    // focus but before the Enter below — the exact event-boundary race.
+    await page.evaluate(() => {
+      location.hash = "#library";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+      const oldOpen = document.querySelector(".book-open");
+      oldOpen.dataset.renderRaceOld = "";
+      oldOpen.focus();
+    });
+    await expect(page.locator("#viewLibrary")).toBeVisible();
+    // Do not let the assertion pass against the still-connected original node: wait
+    // until the render has definitely removed the marked control from the document.
+    await expect(page.locator("[data-render-race-old]")).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => ({
+      className: document.activeElement && document.activeElement.className,
+      bookId: document.activeElement && document.activeElement.closest(".book")?.dataset.id,
+    }))).toEqual({ className: "book-open", bookId: id });
+
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#viewReader")).toBeVisible();
+    await expect.poll(() => page.evaluate(() => document.activeElement && document.activeElement.id)).toBe("backBtn");
+  });
+
   /* showView() toggles .active, and `.view { display:none }` unrenders the whole
      outgoing subtree — including whatever the user had focused. Every other place
      that hides a focused control (hidePlayer, closeSheets, the Remove handler, the
@@ -309,6 +340,30 @@ test.describe("accessibility and input", () => {
     await expect(page.locator(".book")).toHaveCount(0);
     await expect
       .poll(() => page.evaluate(() => document.activeElement && document.activeElement.id), { timeout: 5_000 })
+      .toBe("addBookBtn");
+  });
+
+  test("a completed book removal never steals focus chosen during its IDB await", async ({ page }) => {
+    await page.goto("/");
+    await importEpub(page, { title: "Alpha Book" });
+    await importEpub(page, { title: "Beta Book" });
+    await expect(page.locator(".book")).toHaveCount(2);
+
+    const del = page.locator(".book .b-del").first();
+    await del.click();
+    await expect(del).toHaveText("Really remove?");
+    await page.evaluate(() => {
+      // click() runs the handler synchronously to its first IDB await; choosing a
+      // different control in this same task guarantees it predates completion.
+      document.querySelector(".book .b-del").click();
+      document.getElementById("addBookBtn").focus();
+    });
+
+    await expect(page.locator(".book")).toHaveCount(1);
+    await expect
+      .poll(() => page.evaluate(() => document.getElementById("a11yAlert").textContent), { timeout: 5_000 })
+      .toContain("Removed");
+    await expect.poll(() => page.evaluate(() => document.activeElement && document.activeElement.id))
       .toBe("addBookBtn");
   });
 
