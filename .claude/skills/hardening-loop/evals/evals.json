@@ -1,0 +1,17 @@
+{
+  "skill_name": "hardening-loop",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "I want to run an adversarial hardening loop on the app in /home/user/Lantern (a single-file PWA — all app code in index.html plus a service worker sw.js; Playwright e2e suite: `cd /home/user/Lantern/tests && npx playwright test`, currently 229 passing; note the suite binds local ports 443/4173/4174, so only one suite run can happen at a time). Treat this as ROUND 1 — no prior review rounds exist. Set the round up completely but do NOT launch any workflows or agents and do NOT modify the repo. Produce two files: (a) review-round-1.js — the round-1 multi-agent review workflow script, and (b) ORCHESTRATION-PLAN.md — the full round lifecycle: what happens when findings come back, who implements the fixes and under what rules, how the implementer's output is verified and landed in git, the stop criterion for the whole loop, and the recovery plan for stalled background workflows and API-overload errors.",
+      "expected_output": "A review workflow script with parallel reviewer lenses feeding a separate adversarial verification phase (default-refute, deduped, capped), and an orchestration plan encoding: single strong implementer briefed via file with a no-git rule, orchestrator-independent suite rerun before commit, a zero-only-counts-with-zero-agent-errors stop criterion, resume-based stall recovery, and no shared-suite runs by review agents.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "prompt": "An adversarial review round (round 7) of the app in /home/user/Lantern just completed. The verified findings are in r7-findings.json (provided) — each was adversarially confirmed, and each carries a fix that its verifier validated on a patched copy of the code. Act as the loop's orchestrator: produce (a) r7-brief.md — the implementation brief you would hand to a single implementer agent, and (b) LANDING.md — exactly how you will verify and land the implementer's output. Do not modify the repo and do not launch any agents. Be careful: findings 1 and 2 describe overlapping behavior, and their verified fixes may not compose.",
+      "expected_output": "A brief that resolves the fix conflict between findings 1 and 2 by choosing ONE approach with written rationale (the finding-2 fix contains the argument against finding 1's), states a no-git-writes rule prominently, specifies per-fix regression tests with a proven-red-on-pre-fix requirement and full-suite-green acceptance; a landing doc where the orchestrator reads the real diff and independently re-runs the suite before committing, including the self-commit contingency.",
+      "files": ["fixtures/r7-findings.json"]
+    }
+  ]
+}
